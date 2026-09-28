@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import argparse
 import shutil
+import sys
 import zipfile
 from pathlib import Path
 
@@ -13,6 +14,9 @@ IGNORE_NAMES = {
     '.git',
     '.smoke-work',
     '.package-work',
+    '.novelops-state',
+    '.inkos-state',
+    'dist',
     'node_modules',
 }
 IGNORE_FILE_SUFFIXES = {
@@ -20,6 +24,28 @@ IGNORE_FILE_SUFFIXES = {
 }
 IGNORE_FILE_NAMES = {
     '.DS_Store',
+}
+
+# 顶层采用白名单：只有这里列出的条目会进入发布包。
+# 用排除名单无法识别「用户在仓库内 init 出来的小说项目」——那种目录含整本正文与
+# .novelops-state 快照，一旦被收录，发版就等于泄露用户创作数据。
+INCLUDE_TOP_LEVEL = {
+    '.github',
+    '.gitignore',
+    'AGENTS.md',
+    'CHANGELOG.md',
+    'CODE_OF_CONDUCT.md',
+    'CONTRIBUTING.md',
+    'LICENSE',
+    'README.md',
+    'SECURITY.md',
+    'SKILL.md',
+    'VERSION',
+    'assets',
+    'docs',
+    'examples',
+    'references',
+    'scripts',
 }
 
 configure_stdio_utf8()
@@ -54,9 +80,13 @@ def should_skip(path):
     return False
 
 
-def copy_tree(src, dst):
+def copy_tree(src, dst, top_level=False):
     dst.mkdir(parents=True, exist_ok=True)
+    skipped = []
     for item in src.iterdir():
+        if top_level and item.name not in INCLUDE_TOP_LEVEL:
+            skipped.append(item.name)
+            continue
         if should_skip(item):
             continue
         target = dst / item.name
@@ -65,6 +95,9 @@ def copy_tree(src, dst):
         else:
             target.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(item, target)
+    if top_level and skipped:
+        # 显式提示，避免维护者新增顶层目录后静默漏打包。
+        sys.stderr.write('package: 跳过非发布内容 %s\n' % ', '.join(sorted(skipped)))
 
 
 def write_zip(stage_root, outfile):
@@ -86,7 +119,7 @@ def package_skill(outdir='', version_suffix=''):
     workdir.mkdir(parents=True, exist_ok=True)
     try:
         stage_root = workdir / SKILL_NAME
-        copy_tree(ROOT, stage_root)
+        copy_tree(ROOT, stage_root, top_level=True)
 
         outfile = outdir / f'{SKILL_NAME}.skill'
         if outfile.exists():

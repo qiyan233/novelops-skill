@@ -26,7 +26,16 @@ from llm_client import (
     resolve_llm_config,
     resolve_mock_source,
 )
-from novelops_common import iso_now, parse_chapter_number, read_text, state_root, write_json
+from novelops_common import (
+    atomic_write_text,
+    clean_model_output,
+    detect_newline,
+    iso_now,
+    parse_chapter_number,
+    read_text,
+    state_root,
+    write_json,
+)
 from novelops_config import load_project_config
 from run_revision_cycle import build_cycle
 from snapshot_story_state import snapshot
@@ -36,6 +45,9 @@ PARA_SPLIT_RE = re.compile(r'\n\s*\n')
 DIFF_LINE_CAP = 400
 LENGTH_RATIO_MIN = 0.4
 LENGTH_RATIO_MAX = 2.5
+# 单条 finding 最多牵引几个段落：evidence 是「突然」这类通用词时会命中很多段，
+# 不设限的话一个 finding 就能吃满 --max-paragraphs 预算，让「最小化修订」名不副实。
+MAX_PARAGRAPHS_PER_FINDING = 2
 
 REWRITE_SYSTEM_PROMPT = (
     '你是长篇小说的最小化修订执行器。规则：\n'
@@ -96,6 +108,14 @@ def collect_targets(chapter_text, findings, max_paragraphs):
                 'reason': 'evidence-not-found',
             })
             continue
+        if len(hit_indexes) > MAX_PARAGRAPHS_PER_FINDING:
+            kept = sorted(hit_indexes)[:MAX_PARAGRAPHS_PER_FINDING]
+            skipped_findings.append({
+                'rule_id': finding.get('rule_id'),
+                'dimension': finding['dimension'],
+                'reason': 'evidence-too-broad',
+            })
+            hit_indexes = set(kept)
         for index in hit_indexes:
             para_findings.setdefault(index, []).append(finding)
 
@@ -149,18 +169,22 @@ def build_rewrite_messages(target, paragraphs, constraints):
 
 
 def validate_rewrite(original, revised):
-    """校验重写结果；返回 (status, reason)。status: rewritten/unchanged/skipped。"""
-    revised = (revised or '').strip()
-    if not revised:
-        return 'skipped', 'empty-rewrite'
-    if find_chapter_headings(revised):
-        return 'skipped', 'rewrite-contains-heading'
-    ratio = len(revised) / float(len(original.strip()) or 1)
+    """校验并净化重写结果；返回 (status, reason, cleaned)。
+
+    净化必须在校验之前：模型返回 ``` 包裹或「好的，以下是修订后的段落：」开场白时，
+    不剥掉就会把围栏和客套话当成合法正文写回小说。status: rewritten/unchanged/skipped。
+    """
+    cleaned = clean_model_output(revised)
+    if not cleaned:
+        return 'skipped', 'empty-rewrite', cleaned
+    if find_chapter_headings(cleaned):
+        return 'skipped', 'rewrite-contains-heading', cleaned
+    ratio = len(cleaned) / float(len(original.strip()) or 1)
     if ratio < LENGTH_RATIO_MIN or ratio > LENGTH_RATIO_MAX:
-        return 'skipped', 'rewrite-out-of-bounds'
-    if revised == original.strip():
-        return 'unchanged', None
-    return 'rewritten', None
+        return 'skipped', 'rewrite-out-of-bounds', cleaned
+    if cleaned == original.strip():
+        return 'unchanged', None, cleaned
+    return 'rewritten', None, cleaned
 
 
 def rebuild_text(chapter_text, replacements):
@@ -172,7 +196,7 @@ def rebuild_text(chapter_text, replacements):
 
 
 def build_auto_revise(project, chapter_file, dry_run=False, apply_changes=False, mock_path=None,
-                      llm_overrides=None, max_paragraphs=5, skip_knowledge_check=False):
+                      llm_overrides=None, max_paragraphs=5, skip_knowledge_check=False, force=False):
     chapter_file = Path(chapter_file)
     cycle = build_cycle(project, chapter_file, run_knowledge_check=not skip_knowledge_check)
     chapter_text = read_text(chapter_file)
@@ -222,6 +246,13 @@ def build_auto_revise(project, chapter_file, dry_run=False, apply_changes=False,
         'snapshot': None,
     }
 
+    # audit 判定 block 说明存在 critical 问题（如信息边界泄露）。局部段落重写修不了
+    # 结构性问题，还可能把它盖住；在调用 LLM 之前就拒绝，附带 --force 逃生通道。
+    if apply_changes and not force and report['based_on']['audit_overall'] == 'block':
+        raise SystemExit(
+            'Audit overall is "block"（存在 critical 问题）；段落级重写修不了结构性问题。'
+            '请先处理 critical 项，确认仍要继续时加 --force。')
+
     def target_entry(target):
         return {
             'paragraph_index': target['paragraph']['index'],
@@ -263,12 +294,19 @@ def build_auto_revise(project, chapter_file, dry_run=False, apply_changes=False,
             mock_content = None
         result = chat(build_rewrite_messages(target, paragraphs, constraints), llm_config, mock_content=mock_content)
         transport = result['transport']
-        status, reason = validate_rewrite(target['paragraph']['text'], result['content'])
+        status, reason, cleaned = validate_rewrite(target['paragraph']['text'], result['content'])
         entry['status'] = status
         entry['skip_reason'] = reason
         if status == 'rewritten':
-            entry['revised'] = result['content']
-            replacements.append((target['paragraph']['start'], target['paragraph']['end'], result['content']))
+            entry['revised'] = cleaned
+            paragraph = target['paragraph']
+            original_segment = chapter_text[paragraph['start']:paragraph['end']]
+            # 保留原段落的首尾空白：段落切片本身可能带尾随换行（文件末尾尤其如此），
+            # 直接用 strip 过的正文替换会把换行吃掉，重建后文件末尾就没有换行了。
+            leading = original_segment[:len(original_segment) - len(original_segment.lstrip())]
+            trailing = original_segment[len(original_segment.rstrip()):]
+            body = cleaned.replace('\r\n', '\n').replace('\r', '\n')
+            replacements.append((paragraph['start'], paragraph['end'], leading + body + trailing))
             report['summary']['paragraphs_rewritten'] += 1
         elif status == 'skipped':
             report['summary']['paragraphs_skipped'] += 1
@@ -297,8 +335,11 @@ def build_auto_revise(project, chapter_file, dry_run=False, apply_changes=False,
         backup_dir = state_root(project) / 'backups' / manifest['snapshot_id']
         backup_dir.mkdir(parents=True, exist_ok=True)
         backup_path = backup_dir / chapter_file.name
-        backup_path.write_text(chapter_text, encoding='utf-8')
-        chapter_file.write_text(revised_text, encoding='utf-8')
+        # 原文件可能是 CRLF；read_text 已把它归一成 \n，写回时按原风格还原，
+        # 否则只改一段却会把整文件行尾翻转，git diff 全红。
+        newline = detect_newline(chapter_file, '\n')
+        atomic_write_text(backup_path, chapter_text.replace('\n', newline))
+        atomic_write_text(chapter_file, revised_text.replace('\n', newline))
         report['summary']['applied'] = True
         report['snapshot'] = {
             'snapshot_id': manifest['snapshot_id'],
@@ -334,6 +375,8 @@ def main():
     parser.add_argument('--chapter-file', required=True)
     parser.add_argument('--dry-run', action='store_true', help='Only print per-target chat payloads.')
     parser.add_argument('--apply', action='store_true', help='Write revisions back (snapshot + backup first).')
+    parser.add_argument('--force', action='store_true',
+                        help='Apply even when the audit overall is "block" (critical findings present).')
     parser.add_argument('--mock-response', help='File whose content is used as the LLM response (offline).')
     parser.add_argument('--max-paragraphs', type=int, default=5)
     parser.add_argument('--skip-knowledge-check', action='store_true')
@@ -365,6 +408,7 @@ def main():
         llm_overrides=llm_overrides,
         max_paragraphs=args.max_paragraphs,
         skip_knowledge_check=args.skip_knowledge_check,
+        force=args.force,
     )
 
     if args.write_report:

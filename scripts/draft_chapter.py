@@ -20,26 +20,46 @@ from llm_client import (
     resolve_llm_config,
     resolve_mock_source,
 )
-from novelops_common import iso_now, parse_chinese_numeral, write_json
+from novelops_common import (
+    CN_NUMERAL_CHARS,
+    atomic_write_text,
+    clean_model_output,
+    detect_newline,
+    iso_now,
+    parse_chinese_numeral,
+    write_json,
+)
 from novelops_config import load_project_config
 
+# 注意：末尾不能用 \b——Python 3 的 \w 含中文，`章` 与紧随其后的标题汉字之间不构成
+# 词边界，`## 第一章夜雨` 这种最常见的写法会整条漏配，导致单章契约守卫失效。
+# 改用 (?![0-9A-Za-z])，只排除「章」后紧跟 ASCII 字母数字的情况。
 LOOSE_HEADING_RE = re.compile(
-    r'^\s{0,3}#{0,3}\s*(?:第\s*([0-9零一二两三四五六七八九十百千]+)\s*章|Chapter\s+(\d+))\b',
+    r'^[ \t]{0,3}(#{1,6}[ \t]*)?(?:第\s*([%s]+)\s*章|Chapter\s+(\d+))(?![0-9A-Za-z])'
+    % CN_NUMERAL_CHARS,
     re.M | re.I,
 )
+
+# 无 `#` 前缀的行还可能是正文句子（如「第一章的故事就这样结束了。」），用句末标点区分。
+SENTENCE_PUNCT_RE = re.compile(r'[。！？；]')
 
 
 def find_chapter_headings(text):
     """返回文本中所有章节标题的 (行文本, 解析出的编号或 None)。"""
     headings = []
     for match in LOOSE_HEADING_RE.finditer(text):
-        cn_num, en_num = match.group(1), match.group(2)
+        end = text.find('\n', match.start())
+        line = text[match.start():] if end == -1 else text[match.start():end]
+        # 带 # 的按标题信任；不带 # 的必须不含句末标点，避免把正文句子误判成标题。
+        if not match.group(1) and SENTENCE_PUNCT_RE.search(line):
+            continue
+        cn_num, en_num = match.group(2), match.group(3)
         number = None
         if en_num:
             number = int(en_num)
         elif cn_num:
             number = parse_chinese_numeral(cn_num)
-        headings.append((match.group(0).strip(), number))
+        headings.append((line.strip(), number))
     return headings
 
 
@@ -78,12 +98,19 @@ def build_messages(packet):
 
 
 def validate_draft(text, chapter):
-    """校验并规范化草稿：拒绝空响应与多章输出，缺标题时自动补齐。"""
-    text = (text or '').strip()
+    """校验并规范化草稿：拒绝空响应与多章输出，缺标题时自动补齐。
+
+    先净化模型输出（剥代码围栏、去开场白），否则模型偶尔加的
+    「好的，以下是第 2 章：」会作为正文第一段落盘。
+    """
+    raw = (text or '').strip()
+    text = clean_model_output(raw)
     if not text:
         raise SystemExit('LLM returned an empty draft. 请重试，或检查模型与提示词配置。')
     headings = find_chapter_headings(text)
     warnings = []
+    if text != raw:
+        warnings.append('已剥离模型附加的代码围栏或开场白。')
     heading_added = False
     if len(headings) > 1:
         raise SystemExit(
@@ -102,6 +129,7 @@ def validate_draft(text, chapter):
     return normalized, {
         'heading_count': len(headings),
         'heading_added': heading_added,
+        'sanitized': text != raw,
         'warnings': warnings,
     }
 
@@ -156,7 +184,14 @@ def build_draft(project, chapter=None, out=None, force=False, dry_run=False, moc
         raise SystemExit('Draft target already exists: %s. Use --force to overwrite.' % target_file)
 
     mock_source = resolve_mock_source(mock_path)
-    mock_content = load_mock_responses(mock_source)[0] if mock_source else None
+    if mock_source:
+        mock_responses = load_mock_responses(mock_source)
+        # 空 JSON 数组会在这里直接炸 IndexError（非 SystemExit，不会被上层友好处理）
+        if not mock_responses:
+            raise SystemExit('Mock response file contains an empty list: %s' % mock_source)
+        mock_content = mock_responses[0]
+    else:
+        mock_content = None
     result = chat(messages, llm_config, mock_content=mock_content)
 
     normalized, validation = validate_draft(result['content'], target_chapter)
@@ -176,8 +211,10 @@ def build_draft(project, chapter=None, out=None, force=False, dry_run=False, moc
     }
     report['validation'] = validation
 
-    target_file.parent.mkdir(parents=True, exist_ok=True)
-    target_file.write_text(normalized, encoding='utf-8')
+    # 原子写：write_text 会先截断目标文件，中途失败会留下半截章节。
+    # 目标已存在（--force）时沿用其换行风格，避免整文件行尾被翻转。
+    newline = detect_newline(target_file) if target_file.exists() else '\n'
+    atomic_write_text(target_file, normalized.replace('\n', newline))
     report['write'] = {'written': True, 'chapter_file': str(target_file), 'forced': bool(force)}
     return report
 

@@ -22,15 +22,22 @@ def guess_title(chapter_text, chapter_file):
 
 
 def pick_summary(sentences):
+    """挑一句作为本章摘要。
+
+    原实现只在前 12 句里打分，长章节真正的转折常在第 12 句之后，摘要于是
+    永远取自开头。改为全文打分：关键词命中数优先，其次长度，同分取靠前的那句。
+    """
     if not sentences:
         return ''
-    scored = []
-    for sentence in sentences[:12]:
+    best_score = None
+    best_sentence = sentences[0]
+    for sentence in sentences:
         score = sum(1 for hint in SUMMARY_HINTS if hint in sentence)
         score += min(len(sentence), 120) / 120.0
-        scored.append((score, sentence))
-    scored.sort(key=lambda x: x[0], reverse=True)
-    return scored[0][1] if scored else sentences[0]
+        if best_score is None or score > best_score:
+            best_score = score
+            best_sentence = sentence
+    return best_sentence
 
 
 def dedupe_keep_order(items, limit=None):

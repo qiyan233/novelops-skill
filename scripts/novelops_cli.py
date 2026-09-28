@@ -5,7 +5,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-from novelops_common import configure_stdio_utf8
+from novelops_common import atomic_write_text, configure_stdio_utf8
 
 ROOT = Path(__file__).resolve().parent
 PROJECT_ROOT = ROOT.parent
@@ -21,10 +21,6 @@ def run(cmd, **kwargs):
 
 def py(script, args):
     return [sys.executable, str(ROOT / script)] + args
-
-
-def sh(script, args):
-    return ['bash', str(ROOT / script)] + args
 
 
 def init_project(project, title, force=False):
@@ -43,7 +39,7 @@ def init_project(project, title, force=False):
         if not path.exists():
             continue
         text = path.read_text(encoding='utf-8')
-        path.write_text(text.replace('{{BOOK_TITLE}}', title), encoding='utf-8')
+        atomic_write_text(path, text.replace('{{BOOK_TITLE}}', title))
 
     print('Initialized novel project at: %s' % project)
     print('Title: %s' % title)
@@ -161,6 +157,7 @@ def main():
     p.add_argument('--chapter-file', required=True)
     p.add_argument('--dry-run', action='store_true')
     p.add_argument('--apply', action='store_true')
+    p.add_argument('--force', action='store_true', help='Apply even when the audit overall is "block".')
     p.add_argument('--mock-response')
     p.add_argument('--max-paragraphs', type=int, default=5)
     p.add_argument('--skip-knowledge-check', action='store_true')
@@ -342,6 +339,8 @@ def main():
             cmd.append('--dry-run')
         if args.apply:
             cmd.append('--apply')
+        if args.force:
+            cmd.append('--force')
         if args.mock_response:
             cmd.extend(['--mock-response', args.mock_response])
         cmd.extend(['--max-paragraphs', str(args.max_paragraphs)])

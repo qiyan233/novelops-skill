@@ -5,3 +5,5 @@ scripts/__pycache__/
 dist/
 .smoke-work/
 .package-work/
+.novelops-state/
+.inkos-state/

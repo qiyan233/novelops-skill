@@ -71,47 +71,55 @@ def snapshot(project, label=None, chapter=None, notes=None):
     snapshot_id, dest = unique_snapshot_dir(root, snapshot_id)
     dest.mkdir(parents=True, exist_ok=False)
 
-    copied = []
-    missing = []
-    for rel in TRACKED_FILES:
-        src = project / rel
-        if not src.exists():
-            missing.append(rel)
-            continue
-        dst = dest / rel
-        dst.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(str(src), str(dst))
-        copied.append({
-            'path': rel,
-            'bytes': src.stat().st_size,
-            'sha1': sha1_file(src),
-        })
+    try:
+        copied = []
+        missing = []
+        for rel in TRACKED_FILES:
+            src = project / rel
+            if not src.exists():
+                missing.append(rel)
+                continue
+            dst = dest / rel
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(str(src), str(dst))
+            copied.append({
+                'path': rel,
+                'bytes': src.stat().st_size,
+                'sha1': sha1_file(src),
+            })
 
-    manifest = {
-        'schema_version': 'novelops.state-snapshot.v1',
-        'tool': 'snapshot_story_state',
-        'generated_at': iso_now(),
-        'project': str(project),
-        'snapshot_id': snapshot_id,
-        'snapshot_dir': str(dest),
-        'label': label,
-        'chapter': chapter,
-        'notes': notes,
-        'files_copied': copied,
-        'files_missing': missing,
-    }
-    write_json(dest / 'manifest.json', manifest)
-
-    index = state_root(project) / 'index.jsonl'
-    index.parent.mkdir(parents=True, exist_ok=True)
-    with index.open('a', encoding='utf-8') as f:
-        f.write(json.dumps({
+        manifest = {
+            'schema_version': 'novelops.state-snapshot.v1',
+            'tool': 'snapshot_story_state',
+            'generated_at': iso_now(),
+            'project': str(project),
             'snapshot_id': snapshot_id,
-            'generated_at': manifest['generated_at'],
-            'chapter': chapter,
-            'label': label,
             'snapshot_dir': str(dest),
-        }, ensure_ascii=False) + '\n')
+            'label': label,
+            'chapter': chapter,
+            'notes': notes,
+            'files_copied': copied,
+            'files_missing': missing,
+        }
+        # manifest 是「快照完整」的标记：diff 的 latest 只认带 manifest 的目录。
+        # 放在最后写，失败了就说明这个快照不完整。
+        write_json(dest / 'manifest.json', manifest)
+
+        index = state_root(project) / 'index.jsonl'
+        index.parent.mkdir(parents=True, exist_ok=True)
+        with index.open('a', encoding='utf-8') as f:
+            f.write(json.dumps({
+                'snapshot_id': snapshot_id,
+                'generated_at': manifest['generated_at'],
+                'chapter': chapter,
+                'label': label,
+                'snapshot_dir': str(dest),
+            }, ensure_ascii=False) + '\n')
+    except BaseException:
+        # 中途失败（文件被占用、磁盘写满）会留下没有 manifest 的半截目录；
+        # 留着会被 diff --from latest 选中并读出缺文件的内容。
+        shutil.rmtree(dest, ignore_errors=True)
+        raise
     return manifest
 
 

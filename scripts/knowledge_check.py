@@ -37,6 +37,41 @@ VALID_LEAK_KINDS = ('knowledge-leak', 'premature-certainty', 'omniscient-leak')
 VALID_KNOWLEDGE_SECTION_KEYS = ('keywords', 'leak_patterns', 'kinds_disabled')
 VALID_LEAK_PATTERN_MODES = ('extend', 'replace', 'disable')
 
+SEVERITY_RANK = {'note': 0, 'minor': 1, 'major': 2, 'critical': 3}
+
+# belief 事实里用来切词的虚词/指示词，用来把「那个计划」切成「计划」
+FACT_PARTICLE_RE = re.compile(r'[的了是和与在被把对为个这那些之其]')
+
+
+def leak_severity(kind):
+    """与 1.0/1.1 既有行为保持一致：只有 omniscient-leak 记为 major。"""
+    return 'major' if kind == 'omniscient-leak' else 'minor'
+
+
+def belief_fact_keywords(statement, negation_tokens):
+    """从 belief 语句中抽出「具体事实」的关键词。
+
+    belief 形如「李明：不知道张三的身份」，去掉否定词后剩下的「张三的身份」
+    才是这条 belief 真正约束的对象。只判断句子里有没有 FACT_CONFIDENCE_TOKENS
+    里的泛词（计划/身份/真相），会让「李明制定了一个计划。」这种完全正常的
+    句子被误报成越权——所以要求正文命中本条 belief 的事实词。
+
+    注意不要把事实词里与泛词表重合的词（如「真相」）排除掉：belief 说的是
+    「玉佩的真相」，正文写「看出了真相的全部内情」而不提玉佩，仍属越权。
+    """
+    fact = statement
+    for token in negation_tokens:
+        index = fact.find(token)
+        if index != -1:
+            fact = fact[index + len(token):]
+            break
+    words = []
+    for chunk in FACT_PARTICLE_RE.split(fact):
+        for word in re.findall(r'[^\W_]{2,}', chunk):
+            if word not in words:
+                words.append(word)
+    return words
+
 
 def resolve_knowledge_config(project, config=None):
     """解析项目配置的 knowledge 节，返回 (token 表, 已编译泄漏模式, 禁用 kind 集合, summary.config 块)。"""
@@ -113,17 +148,26 @@ def resolve_knowledge_config(project, config=None):
 
 
 def build_character_beliefs(project):
+    """解析 current_state.md 的 Character beliefs 小节，返回 (beliefs, malformed)。
+
+    缺少「角色：事实」分隔符的行归入 malformed：原实现会把整行当成角色名，
+    该条 belief 于是永久失配且无人察觉。
+    """
     text = read_text(project / 'current_state.md')
     belief_text = extract_markdown_section(text, 'Character beliefs')
     beliefs = []
+    malformed = []
     for line in belief_text.splitlines():
         line = line.strip()
         if not line.startswith('- '):
             continue
         raw = line[2:].strip()
-        character = raw.split('：', 1)[0].split(':', 1)[0].strip()
+        if '：' not in raw and ':' not in raw:
+            malformed.append(raw)
+            continue
+        character = re.split(r'[：:]', raw, maxsplit=1)[0].strip()
         beliefs.append({'character': character, 'statement': raw})
-    return beliefs
+    return beliefs, malformed
 
 
 def knowledge_violations(chapter_text, beliefs, tables=None, leak_patterns=None, disabled_kinds=None):
@@ -135,19 +179,29 @@ def knowledge_violations(chapter_text, beliefs, tables=None, leak_patterns=None,
     confidence_tokens = tables['FACT_CONFIDENCE_TOKENS']
     findings = []
     sentences = split_sentences(chapter_text)
-    if 'knowledge-leak' in disabled_kinds:
-        belief_candidates = []
-    else:
-        belief_candidates = beliefs
-    for sentence in sentences:
-        for item in belief_candidates:
+
+    resolved_beliefs = []
+    if 'knowledge-leak' not in disabled_kinds:
+        for item in beliefs:
             statement = item['statement']
             if not any(token in statement for token in negation_tokens):
                 continue
+            resolved_beliefs.append({
+                'character': item['character'],
+                'statement': statement,
+                'fact_keywords': belief_fact_keywords(statement, negation_tokens),
+            })
+
+    for sentence in sentences:
+        for item in resolved_beliefs:
             character = item['character']
             if character and character not in sentence:
                 continue
             if not any(token in sentence for token in confidence_tokens):
+                continue
+            # 必须命中这条 belief 约束的具体事实：否则「计划」「身份」这类泛词
+            # 会让任意含该词的正常句子被误报成越权。
+            if item['fact_keywords'] and not any(word in sentence for word in item['fact_keywords']):
                 continue
             if any(token in sentence for token in suspicion_tokens):
                 continue
@@ -163,18 +217,27 @@ def knowledge_violations(chapter_text, beliefs, tables=None, leak_patterns=None,
             break
 
     for sentence in sentences:
+        # 同一句可能同时命中多个模式。取严重度最高的那个——命中首个就 break
+        # 会让模式表里靠前的轻模式掩盖掉更重的全知视角泄露。
+        best = None
         for kind, pattern in leak_patterns:
-            if pattern.search(sentence):
-                findings.append({
-                    'severity': 'minor' if kind != 'omniscient-leak' else 'major',
-                    'type': kind,
-                    'character': None,
-                    'fact': None,
-                    'evidence': sentence,
-                    'reason': 'Sentence suggests knowledge or narration scope that may exceed current POV constraints.',
-                    'suggested_fix': 'Anchor the line in observable evidence or a named character perspective.',
-                })
-                break
+            if not pattern.search(sentence):
+                continue
+            severity = leak_severity(kind)
+            if best is None or SEVERITY_RANK[severity] > SEVERITY_RANK[best[0]]:
+                best = (severity, kind)
+        if best is None:
+            continue
+        severity, kind = best
+        findings.append({
+            'severity': severity,
+            'type': kind,
+            'character': None,
+            'fact': None,
+            'evidence': sentence,
+            'reason': 'Sentence suggests knowledge or narration scope that may exceed current POV constraints.',
+            'suggested_fix': 'Anchor the line in observable evidence or a named character perspective.',
+        })
     return findings
 
 
@@ -183,7 +246,7 @@ def build_report(project, chapter_file, config=None):
     tables, leak_patterns, disabled_kinds, config_summary = resolve_knowledge_config(project, config)
     chapter_file = require_existing_file(chapter_file, 'Chapter file')
     chapter_text = read_text(chapter_file)
-    beliefs = build_character_beliefs(project)
+    beliefs, malformed_beliefs = build_character_beliefs(project)
     violations = knowledge_violations(chapter_text, beliefs, tables, leak_patterns, disabled_kinds)
     chapter_num = parse_chapter_number(Path(chapter_file).stem) or parse_chapter_number(chapter_text) or None
     counts = {'critical': 0, 'major': 0, 'minor': 0, 'note': 0}
@@ -202,6 +265,7 @@ def build_report(project, chapter_file, config=None):
             'violation_count': len(violations),
             'counts': counts,
             'beliefs_loaded': len(beliefs),
+            'malformed_beliefs': malformed_beliefs,
             'config': config_summary,
         },
         'source_files': [

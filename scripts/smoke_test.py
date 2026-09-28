@@ -5,6 +5,7 @@ import re
 import shutil
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 from novelops_common import configure_stdio_utf8, parse_chinese_numeral
@@ -78,9 +79,10 @@ def check_iso_now_format():
 
 def main():
     invoked_by_cli = '--invoked-by-cli' in sys.argv[1:]
-    tmp = ROOT / '.smoke-work'
-    shutil.rmtree(tmp, ignore_errors=True)
-    tmp.mkdir(parents=True, exist_ok=True)
+    # 每次运行用独立临时目录：原先固定用 <repo>/.smoke-work 并在启动时 rmtree，
+    # 两个 smoke test 并行跑（或崩溃残留进程仍在跑）会互相删除工作目录，
+    # 表现为随机失败点各不相同的假故障。
+    tmp = Path(tempfile.mkdtemp(prefix='novelops-smoke-'))
     try:
         print('===== iso_now format regression =====')
         check_iso_now_format()
@@ -785,6 +787,14 @@ def main():
         legacy_snapshot_dir = legacy_project / '.inkos-state' / 'snapshots' / '20200101T000000Z-ch001-legacy'
         legacy_snapshot_dir.mkdir(parents=True)
         shutil.copy2(str(legacy_project / 'current_state.md'), str(legacy_snapshot_dir / 'current_state.md'))
+        # 旧版 snapshot 同样会写 manifest.json；夹具补齐它，才代表真实的历史快照
+        # （diff 以 manifest 判定快照是否完整）。
+        (legacy_snapshot_dir / 'manifest.json').write_text(json.dumps({
+            'schema_version': 'novelops.state-snapshot.v1',
+            'tool': 'snapshot_story_state',
+            'snapshot_id': '20200101T000000Z-ch001-legacy',
+            'snapshot_dir': str(legacy_snapshot_dir),
+        }, ensure_ascii=False), encoding='utf-8')
         with (legacy_project / 'current_state.md').open('a', encoding='utf-8') as f:
             f.write('\n- 旧快照回退测试：当前状态已推进。\n')
         legacy_diff = run_cli('diff', '--project', str(legacy_project), '--from', 'latest', '--to', 'current', '--json', check=False)

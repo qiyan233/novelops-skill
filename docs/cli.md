@@ -167,6 +167,15 @@ python scripts/novelops_cli.py auto-revise \
 
 跑完修订闭环后，把可局部修补（local-dimension）的问题段落交 LLM 做最小化重写；同样支持 `--dry-run` 与 `--mock-response`。
 
+`--apply` 前会重跑知识边界检查与审计：若审计判定 `overall: block`（存在 critical 问题），局部重写修不了结构性问题，命令会拒绝写入并提示先处理 critical 项；确认仍要继续时加 `--force`。
+
+```bash
+python scripts/novelops_cli.py auto-revise \
+  --project /path/to/project \
+  --chapter-file /path/to/project/chapters/ch03.md \
+  --apply --force --json
+```
+
 ### 项目级配置 / Project config
 
 `init` 会在项目根生成 `novelops.config.json`，三个节都可省略：

@@ -4,7 +4,13 @@ import json
 import re
 from collections import Counter
 
-from novelops_common import iso_now, read_text, require_project_markers
+from novelops_common import (
+    CHAPTER_HEADING_RE,
+    iso_now,
+    parse_chapter_number,
+    read_text,
+    require_project_markers,
+)
 
 STATUS_ALIASES = {
     'OPEN': 'OPEN',
@@ -56,8 +62,12 @@ def load_hooks(project):
 
 
 def latest_chapter_seen(project):
+    """最新章号；复用共享解析器以支持中文数字（「第十二章」）。"""
     text = read_text(project / 'chapter_summaries.md')
-    chapters = [int(x) for x in re.findall(r'^##\s+(?:Chapter\s+|第\s*)(\d+)', text, flags=re.M)]
+    chapters = [number for number in
+                (parse_chapter_number(match.group(0))
+                 for match in re.finditer(CHAPTER_HEADING_RE, text, flags=re.M))
+                if number is not None]
     return max(chapters) if chapters else 0
 
 

@@ -4,16 +4,26 @@ import json
 import re
 from pathlib import Path
 
-from novelops_common import iso_now, require_project_markers, write_json
+from novelops_common import atomic_write_text, iso_now, read_text, require_project_markers, write_json
+
+
+def one_line(value):
+    """把自由文本字段压成单行。
+
+    字段里带换行时，后半截会落到行首，被 markdown 当成新的结构——例如
+    `--state-change $'A\\n## Timeline position'` 会注入一个同名标题，
+    破坏后续 upsert_section 的定位。
+    """
+    return re.sub(r'\s+', ' ', (value or '').strip())
 
 
 def append_block(path, text):
+    """追加一个块。改为读-改-原子写，避免追加中途失败留下半截块。"""
     path = Path(path)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open('a', encoding='utf-8') as f:
-        if path.exists() and path.stat().st_size > 0:
-            f.write('\n')
-        f.write(text.rstrip() + '\n')
+    existing = read_text(path)
+    block = text.rstrip() + '\n'
+    new_text = existing.rstrip('\n') + '\n\n' + block if existing.strip() else block
+    atomic_write_text(path, new_text)
 
 
 def upsert_section(text, heading, body_lines):
@@ -27,9 +37,8 @@ def upsert_section(text, heading, body_lines):
     return updated.rstrip() + '\n'
 
 
-def sync_current_state(path, chapter, title, summary, state_changes):
-    path = Path(path)
-    text = path.read_text(encoding='utf-8') if path.exists() else ''
+def build_current_state_text(text, chapter, title, summary, state_changes):
+    """纯函数：由现有内容算出更新后的 current_state.md 文本（不落盘）。"""
     timeline_value = 'ch%s accepted - %s' % (chapter, title)
     text = upsert_section(text, 'Timeline position', ['- %s' % timeline_value])
 
@@ -43,12 +52,20 @@ def sync_current_state(path, chapter, title, summary, state_changes):
         latest_update.extend(['  - %s' % item for item in state_changes])
     else:
         latest_update.append('  - none')
-    text = upsert_section(text, 'Latest accepted update', latest_update)
-    path.write_text(text, encoding='utf-8')
+    return upsert_section(text, 'Latest accepted update', latest_update)
 
 
 def apply_update(project, chapter, title, summary, state_changes, hook_open, hook_advance, hook_close, relationships, emotions):
     project = require_project_markers(project)
+    # 所有自由文本先压成单行：换行会落到行首被当成新的 markdown 结构。
+    title = one_line(title)
+    summary = one_line(summary)
+    state_changes = [one_line(x) for x in state_changes]
+    hook_open = [one_line(x) for x in hook_open]
+    hook_advance = [one_line(x) for x in hook_advance]
+    hook_close = [one_line(x) for x in hook_close]
+    relationships = [one_line(x) for x in relationships]
+    emotions = [one_line(x) for x in emotions]
     summary_path = project / 'chapter_summaries.md'
     current_state_path = project / 'current_state.md'
     hooks_path = project / 'pending_hooks.md'
@@ -80,10 +97,16 @@ def apply_update(project, chapter, title, summary, state_changes, hook_open, hoo
         chapter_block.append('- Emotional arc changes:')
         chapter_block.extend(['  - %s' % x for x in emotions])
 
-    append_block(summary_path, '\n'.join(chapter_block))
+    # 先把两个真值文件的新内容都算出来，再统一落盘：构造期出错不会改动任何文件，
+    # 避免出现 chapter_summaries 已更新而 current_state 还是旧值的半套状态。
+    summaries_block = '\n'.join(chapter_block)
+    current_state_text = build_current_state_text(
+        read_text(current_state_path), chapter, title, summary, state_changes)
+
+    append_block(summary_path, summaries_block)
     updated_files.append(str(summary_path))
 
-    sync_current_state(current_state_path, chapter, title, summary, state_changes)
+    atomic_write_text(current_state_path, current_state_text)
     updated_files.append(str(current_state_path))
 
     if hook_open or hook_advance or hook_close:

@@ -8,6 +8,15 @@ from novelops_common import iso_now, read_text, require_project_markers, snapsho
 from snapshot_story_state import TRACKED_FILES
 
 
+def is_snapshot_dir(path):
+    """快照目录必须含 manifest.json。
+
+    snapshot() 最后才写 manifest，所以它是「快照完整」的标记；只按 is_dir() 判断
+    会把中途失败留下的半截目录（缺文件、无 manifest）也当成快照读进来。
+    """
+    return path.is_dir() and (path / 'manifest.json').is_file()
+
+
 def resolve_snapshot(project, ref):
     project = Path(project)
     roots = snapshot_roots(project)
@@ -15,7 +24,7 @@ def resolve_snapshot(project, ref):
         return {'kind': 'current', 'id': 'current', 'path': project, 'path_str': str(project)}
     if ref == 'latest':
         choices = sorted(
-            [p for root in roots for p in root.iterdir() if p.is_dir()],
+            [p for root in roots for p in root.iterdir() if is_snapshot_dir(p)],
             key=lambda p: p.name,
         )
         if not choices:
@@ -23,17 +32,25 @@ def resolve_snapshot(project, ref):
         target = choices[-1]
         return {'kind': 'snapshot', 'id': target.name, 'path': target, 'path_str': str(target)}
     path = Path(ref)
-    if path.exists():
+    if is_snapshot_dir(path):
         return {'kind': 'snapshot', 'id': path.name, 'path': path, 'path_str': str(path)}
     for root in roots:
         target = root / ref
-        if target.exists():
+        if is_snapshot_dir(target):
             return {'kind': 'snapshot', 'id': target.name, 'path': target, 'path_str': str(target)}
-    raise SystemExit('Snapshot ref not found: %s' % ref)
+    raise SystemExit('Snapshot ref not found (or incomplete, missing manifest.json): %s' % ref)
 
 
 def load_file(base, rel):
-    return read_text(Path(base) / rel)
+    """读取快照/项目里的文件，返回 (内容, 是否存在)。
+
+    read_text 对缺失文件返回空串，无法区分「文件被删除」与「文件本来就是空的」，
+    会让 diff 的 added/removed 判定失真。
+    """
+    path = Path(base) / rel
+    if not path.is_file():
+        return '', False
+    return read_text(path), True
 
 
 def diff_report(project, from_ref, to_ref):
@@ -47,9 +64,9 @@ def diff_report(project, from_ref, to_ref):
     changed = 0
 
     for rel in TRACKED_FILES:
-        before = load_file(left['path'], rel)
-        after = load_file(right['path'], rel)
-        if before == after:
+        before, before_present = load_file(left['path'], rel)
+        after, after_present = load_file(right['path'], rel)
+        if before == after and before_present == after_present:
             continue
         changed += 1
         before_lines = before.splitlines()
@@ -60,13 +77,14 @@ def diff_report(project, from_ref, to_ref):
         added_total += added
         removed_total += removed
         status = 'changed'
-        if not before and after:
+        if not before_present and after_present:
             status = 'added'
-        elif before and not after:
+        elif before_present and not after_present:
             status = 'removed'
         file_diffs.append({
             'path': rel,
             'status': status,
+            'present': {'from': before_present, 'to': after_present},
             'added_lines': added,
             'removed_lines': removed,
             'diff_excerpt': udiff[:80],

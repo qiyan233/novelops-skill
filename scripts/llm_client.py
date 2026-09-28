@@ -46,7 +46,9 @@ def resolve_llm_config(project_config, overrides=None):
                 raise SystemExit(
                     '%s has unknown key %r (known: %s)'
                     % (source_name, key, ', '.join(sorted(DEFAULT_LLM_CONFIG))))
-            if source is not llm_section and value is None:
+            # None 一律视为「未设置」并跳过：配置文件里写 `"temperature": null`
+            # 会把默认值覆盖成 None，请求体里就会出现 "temperature": null。
+            if value is None:
                 continue
             resolved[key] = value
     return resolved

@@ -103,8 +103,21 @@ def finding_counts(findings):
     return counts
 
 
-def chapter_metrics(chapter, time_jumps=None):
+def split_paragraphs(chapter):
+    """切段落用于节奏分析。
+
+    优先按空行分段；中文稿常以单换行分段，这时空行切分只会得到 1 段，
+    会让 AUD-104 的 min_paragraphs 门槛永远不成立（等于规则失效），
+    因此单段结果回退到按行切分。
+    """
     paras = [p.strip() for p in re.split(r'\n\s*\n', chapter) if p.strip()]
+    if len(paras) > 1:
+        return paras
+    return [p.strip() for p in chapter.splitlines() if p.strip()]
+
+
+def chapter_metrics(chapter, time_jumps=None):
+    paras = split_paragraphs(chapter)
     return {
         'char_count': len(chapter),
         'paragraph_count': len(paras),
@@ -184,7 +197,7 @@ def build_report(project, chapter_file, config=None):
     if 'AUD-104' not in disabled:
         rules_evaluated.append('AUD-104')
         th104 = thresholds['AUD-104']
-        paras = [p.strip() for p in re.split(r'\n\s*\n', chapter) if p.strip()]
+        paras = split_paragraphs(chapter)
         if len(paras) >= th104['min_paragraphs']:
             lens = [len(p) for p in paras]
             avg = sum(lens) / float(len(lens))

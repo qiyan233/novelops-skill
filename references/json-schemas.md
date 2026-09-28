@@ -91,6 +91,13 @@
 - `source_files[]`
 - `violations[]`
 
+### `summary`
+- `violation_count`
+- `counts`（`critical` / `major` / `minor` / `note`）
+- `beliefs_loaded`（成功解析的 character-belief 条数）
+- `malformed_beliefs[]`（`## Character beliefs` 下缺少「角色：事实」分隔符的行；这些行无法参与判定，列出来提示用户修数据）
+- `config`
+
 ### `violations[]`
 每条 violation 包含：
 - `severity`
@@ -361,6 +368,7 @@
 每条包含：
 - `path`
 - `status`（`added` / `removed` / `changed`）
+- `present`（`{from, to}`：两侧文件是否实际存在；用于区分「文件被删除」与「文件本就是空的」）
 - `added_lines`
 - `removed_lines`
 - `diff_excerpt[]`（unified diff 片段，最多 80 行）
@@ -404,7 +412,8 @@
 - `llm`（`provider` / `base_url` / `model` / `temperature` / `top_p` / `max_tokens` / `api_key`（恒为 `null`，永不携带明文）/ `api_key_present` / `api_key_source`）
 - `request`（dry-run 时为 `{payload}` 完整请求体；否则为 `{message_count, system_chars, user_chars}`）
 - `response`（dry-run 时为 `null`；否则含 `raw_chars` / `content_chars` / `think_stripped` / `usage` / `model`）
-- `validation`（`heading_count` / `heading_added` / `warnings[]`）
+- `validation`（`heading_count` / `heading_added` / `sanitized` / `warnings[]`）
+  - `sanitized`：模型输出被剥掉代码围栏或开场白（如「好的，以下是…：」）时为 `true`
 - `write`（`written` / `chapter_file` / `forced`）
 - `next_actions[]`
 - `report_path`（仅 `--write-report` 时出现）
@@ -421,7 +430,8 @@
 - `based_on`（`revision_cycle_status` / `audit_overall`）
 - `summary`（`local_finding_count` / `paragraphs_targeted` / `paragraphs_rewritten` / `paragraphs_skipped` / `applied`）
 - `targets[]`
-- `skipped_findings[]`（`rule_id` / `dimension` / `reason`：`no-evidence-anchor` / `evidence-not-found` / `over-paragraph-budget`）
+- `skipped_findings[]`（`rule_id` / `dimension` / `reason`：`no-evidence-anchor` / `evidence-not-found` / `evidence-too-broad` / `over-paragraph-budget`）
+  - `evidence-too-broad`：evidence 是「突然」这类通用词，命中的段落数超过单条 finding 的预算（2 段），已按靠前的段落截取
 - `diff[]`（整章 unified diff，最多 400 行）/ `diff_truncated`
 - `snapshot`（仅 `--apply` 且有改动时：`snapshot_id` / `snapshot_dir` / `chapter_backup`；否则 `null`）
 - `report_path`（仅 `--write-report` 时出现）

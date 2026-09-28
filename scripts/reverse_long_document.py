@@ -5,7 +5,14 @@ import re
 from pathlib import Path
 
 from extract_state import build_report_from_text
-from novelops_common import iso_now, parse_chinese_numeral, read_text, require_existing_file, write_json
+from novelops_common import (
+    atomic_write_text,
+    iso_now,
+    parse_chinese_numeral,
+    read_text,
+    require_existing_file,
+    write_json,
+)
 
 HEADING_PATTERNS = [
     re.compile(r'^\s*#{1,6}\s*(Chapter\s+\d+.*)$', re.I),
@@ -70,19 +77,24 @@ def chapter_id(chapter_num):
     return 'ch%04d' % chapter_num
 
 
-def chunk_file_name(start_chapter, end_chapter):
-    return 'chapter_%04d_%04d.json' % (start_chapter, end_chapter)
+def chunk_file_name(block_index, start_chapter, end_chapter):
+    """分块文件名以块序号打头。
+
+    只用起止章号命名的话，源文档章号重复或非单调（例如两章都被解析成同一编号）
+    会算出同名文件，后写的块直接覆盖先写的，静默丢掉分块与 chunk_analysis。
+    """
+    return 'chunk_%04d_chapter_%04d_%04d.json' % (block_index, start_chapter, end_chapter)
 
 
 def build_index(source_path, chapters, chapters_per_file):
     total = len(chapters)
     chunk_files = []
     chapter_rows = []
-    for chunk_start in range(0, total, chapters_per_file):
+    for block_index, chunk_start in enumerate(range(0, total, chapters_per_file)):
         chunk = chapters[chunk_start:chunk_start + chapters_per_file]
         start_chapter = chunk[0]['chapter_num']
         end_chapter = chunk[-1]['chapter_num']
-        file_name = chunk_file_name(start_chapter, end_chapter)
+        file_name = chunk_file_name(block_index, start_chapter, end_chapter)
         chunk_files.append({
             'file': file_name,
             'start_chapter': start_chapter,
@@ -277,9 +289,9 @@ def run_pipeline(source, workspace, chapters_per_file):
 
     analyses = []
     chunk_files = []
-    for start in range(0, len(chapters), chapters_per_file):
+    for block_index, start in enumerate(range(0, len(chapters), chapters_per_file)):
         chunk = chapters[start:start + chapters_per_file]
-        file_name = chunk_file_name(chunk[0]['chapter_num'], chunk[-1]['chapter_num'])
+        file_name = chunk_file_name(block_index, chunk[0]['chapter_num'], chunk[-1]['chapter_num'])
         chunk_path = chunks_dir / file_name
         chunk_payload = build_chunk_payload(source_path, chunk)
         write_json(chunk_path, chunk_payload)
@@ -294,7 +306,7 @@ def run_pipeline(source, workspace, chapters_per_file):
     summary_json_path = summary_dir / 'summary.json'
     summary_md_path = summary_dir / 'summary.md'
     write_json(summary_json_path, summary_payload)
-    summary_md_path.write_text(summary_markdown(summary_payload), encoding='utf-8')
+    atomic_write_text(summary_md_path, summary_markdown(summary_payload))
 
     return {
         'schema_version': 'novelops.longdoc-reverse.v1',

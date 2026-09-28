@@ -2,7 +2,9 @@
 
 感谢你关注 `NovelOps Skill`。
 
-这个仓库的定位是：**面向 OpenClaw 的长篇小说工作流 skill skeleton**。欢迎围绕这一定位提交改进，但请尽量保持变更聚焦，不把它扩张成完全不同的产品。
+这个仓库的定位是：**面向智能体应用的长篇小说工作流 skill skeleton**（不绑定具体宿主，
+OpenClaw / Claude Code / IDE 内与终端里的智能体都可以驱动）。
+欢迎围绕这一定位提交改进，但请尽量保持变更聚焦，不把它扩张成完全不同的产品。
 
 ## 适合贡献的方向
 
@@ -11,7 +13,7 @@
 - 完善 `SKILL.md`、`references/`、README、上手文档
 - 优化项目模板与 truth files 结构
 - 增加更稳的 JSON 契约、CLI 子命令或审计维度
-- 提供与 OpenClaw 工作流强相关的示例
+- 提供与小说写作工作流强相关的示例
 
 ## 提交前建议
 
@@ -29,8 +31,10 @@
 如果环境允许，优先执行：
 
 ```bash
-bash scripts/smoke_test.sh
+python scripts/novelops_cli.py smoke-test
 ```
+
+（`bash scripts/smoke_test.sh` 是遗留入口，需要 bash，功能与上面等价。）
 
 如无法完整跑 smoke test，至少建议检查：
 
@@ -41,6 +45,7 @@ python -m py_compile scripts/*.py
 并确认以下文件仍然存在且链接正常：
 
 - `README.md`
+- `README.en.md`
 - `SKILL.md`
 - `scripts/`
 - `assets/project-template/`

@@ -9,7 +9,9 @@ Version: 1.1.0
 
 Build and run long-form fiction as a stateful pipeline, not a one-shot prompt.
 
-Treat this skill as a **novel OS skeleton**: it provides project structure, workflow, audit criteria, and helper scripts for an OpenClaw-based writing system that is conceptually close to InkOS.
+Treat this skill as a **novel OS skeleton**: it provides project structure, workflow, audit criteria, and helper scripts for a stateful long-form writing system that is conceptually close to InkOS.
+
+**Agent-oriented, not host-specific.** The bundled tooling is a plain Python 3 CLI (stdlib only) over plain-text Markdown/JSON state files, so it does not depend on any particular agent runtime — OpenClaw, Claude Code, IDE-embedded agents, terminal agents, or a human at a terminal can all drive it. See `docs/agent-integration.md` for per-host setup.
 
 ## Core operating model / 核心运行模型
 
@@ -495,6 +497,7 @@ Read these only when needed:
 - `references/revision-workflow.md` — how audit, revision plans, spot fixes, and snapshots fit together
 - `references/canon-side-story.md` — how to handle prequels / sequels / alternate lines
 - `references/style-learning.md` — how to learn and apply style without overfitting
+- `docs/agent-integration.md` — how to wire this skill into a specific host (Claude Code / OpenClaw / IDE-embedded or terminal agents); read it when the user asks how to install or integrate the skill
 
 ## Output expectations / 输出期望
 

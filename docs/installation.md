@@ -17,25 +17,29 @@ python scripts/novelops_cli.py smoke-test
 
 - 先理解这个 skill skeleton 的结构
 - 直接改 `SKILL.md`、`scripts/`、`assets/project-template/`
-- 把它当作自己的 OpenClaw 小说工作流底座
+- 把它当作自己的小说工作流底座
 
 ## 方式二：下载 `.skill` 发布包
 
-如果你主要是面向 OpenClaw 安装使用，可从 Releases 获取 `.skill` 包。
+如果你使用 OpenClaw 或其他支持 `.skill` 包的应用，可从 Releases 获取。
 
 仓库内也可自行打包：
 
 ```bash
-bash scripts/package_skill.sh
+python scripts/novelops_cli.py package
 ```
+
+（`bash scripts/package_skill.sh` 是遗留入口，功能等价。）
 
 ## 最小运行要求
 
-- Bash
 - Python 3
 - 一个可编辑 Markdown / JSON 的本地环境
 
 本仓库当前不依赖复杂第三方 Python 包，默认使用标准库脚本。
+
+> Bash 不是必需项。`scripts/*.sh` 是遗留的 shell 入口，仅在你确实使用 bash 时才需要；
+> 所有功能都有等价的 `python scripts/novelops_cli.py ...` 命令，原生 Windows 用 Python 入口即可。
 
 ## 首次验证 / First verification
 

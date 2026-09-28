@@ -24,7 +24,7 @@
 4. 用 `context -> draft -> audit -> extract-state -> state-update` 跑第一章（对应主线 `write-next -> draft -> revise -> ...` 的底层展开，`draft` 由人或 agent 完成）
 5. 需要逐脚本调试时，再回到底层脚本路径
 
-这条路径适合已经理解 InkOS / OpenClaw 工作流思路，只是想快速落地的人。
+这条路径适合已经理解 InkOS 的工作流思路、只是想快速落地的人。
 
 ## 路径 C：我想先看一个可讲清流程的 demo / Demo-first path
 

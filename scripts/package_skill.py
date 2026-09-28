@@ -38,6 +38,7 @@ INCLUDE_TOP_LEVEL = {
     'CONTRIBUTING.md',
     'LICENSE',
     'README.md',
+    'README.en.md',
     'SECURITY.md',
     'SKILL.md',
     'VERSION',

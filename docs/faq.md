@@ -4,11 +4,11 @@
 
 不是。
 
-它更像一个面向 OpenClaw 的长篇小说工作流 skeleton：用 truth files、审计脚本和状态更新，把多章写作变成可维护流程。
+它更像一个面向智能体应用的长篇小说工作流 skeleton：用 truth files、审计脚本和状态更新，把多章写作变成可维护流程。只要智能体能读写文件、执行命令就能驱动它。
 
 ## 它和 InkOS 是什么关系？
 
-本项目受 InkOS 启发，但不是原项目官方移植版。定位是一个更适合 OpenClaw 使用和继续改造的 skill skeleton。
+本项目受 InkOS 启发，但不是原项目官方移植版。定位是一个不绑定具体 agent 应用、可长期继续改造的 skill skeleton。
 
 ## 我一定要维护所有 truth files 吗？
 
@@ -35,7 +35,7 @@
 
 适合：
 
-- OpenClaw 小说 skill 原型
+- 小说写作 skill 原型
 - NovelOps Skill 长篇工作流底座
 - 连载 / 网文 / 同人 / 正典衍生项目
 - 需要多章一致性和可追踪状态的写作流程

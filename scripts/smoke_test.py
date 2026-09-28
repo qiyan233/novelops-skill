@@ -91,6 +91,7 @@ def main():
         print('===== release version markers =====')
         expected_version = (ROOT / 'VERSION').read_text(encoding='utf-8').strip()
         readme_text = (ROOT / 'README.md').read_text(encoding='utf-8')
+        readme_en_text = (ROOT / 'README.en.md').read_text(encoding='utf-8')
         skill_text = (ROOT / 'SKILL.md').read_text(encoding='utf-8')
         changelog_text = (ROOT / 'CHANGELOG.md').read_text(encoding='utf-8')
         if expected_version != '1.1.0':
@@ -99,6 +100,10 @@ def main():
             raise AssertionError('README badge does not match VERSION %s' % expected_version)
         if ('当前版本：**%s**' % expected_version) not in readme_text:
             raise AssertionError('README version line does not match VERSION %s' % expected_version)
+        if ('version-v%s-blue' % expected_version) not in readme_en_text:
+            raise AssertionError('README.en badge does not match VERSION %s' % expected_version)
+        if ('Current version: **%s**' % expected_version) not in readme_en_text:
+            raise AssertionError('README.en version line does not match VERSION %s' % expected_version)
         if ('Version: %s' % expected_version) not in skill_text:
             raise AssertionError('SKILL.md version line does not match VERSION %s' % expected_version)
         if ('## v%s' % expected_version) not in changelog_text:

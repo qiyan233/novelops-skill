@@ -19,7 +19,7 @@ labels: enhancement
 - 长篇连载中的 continuity 审计
 - 番外 / 前传 / 后传的约束写作
 - 更稳定的 JSON 输出给外部工具消费
-- 更完整的 OpenClaw skill 协作体验
+- 更完整的 agent 应用协作体验（见 `docs/agent-integration.md`）
 
 ## 是否有替代方案
 
@@ -27,4 +27,4 @@ labels: enhancement
 
 ## 补充说明
 
-如果这项需求会改变仓库定位，请一并说明为什么仍然符合“面向 OpenClaw 的长篇小说工作流 skill skeleton”这一方向。
+如果这项需求会改变仓库定位，请一并说明为什么仍然符合“面向智能体应用的长篇小说工作流 skill skeleton”这一方向。

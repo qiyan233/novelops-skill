@@ -44,6 +44,14 @@ python scripts/novelops_cli.py init /path/to/project "书名"
 python scripts/novelops_cli.py init /path/to/project "书名" --force
 ```
 
+`--force` 覆盖前会先把即将被覆盖的文件备份到 `.novelops-state/backups/pre-init-<时间戳>/`。如果你的项目已经有内容、只想补齐缺失的模板文件，用：
+
+```bash
+python scripts/novelops_cli.py init /path/to/project "书名" --keep-modified
+```
+
+`--keep-modified` 逐文件判断：缺失的模板文件补上，与模板不同的文件（也就是你自己改过的真值文件）原样保留。
+
 ### 生成上下文 / Build context
 
 ```bash
@@ -124,6 +132,26 @@ python scripts/novelops_cli.py revise \
   --chapter-file /path/to/project/chapters/ch01.md \
   --json \
   --write-report
+```
+
+完整报告会把五份子报告全部内联进来，单章就可能几百 KB。日常只看结论或接 CI 时，用摘要模式：
+
+```bash
+python scripts/novelops_cli.py revise \
+  --project /path/to/project \
+  --chapter-file /path/to/project/chapters/ch01.md \
+  --json --summary
+```
+
+摘要契约是 `novelops.revision-cycle-summary.v1`，包含 `severity_counts`（四档计数）、`counts_by_rule`、`worst_severity`、`coverage` 与 `reports.full_report`（`--write-report` 时永远写全量）。
+
+要按严重级别卡门禁，用 `--fail-on`（`none`/`critical`/`major`/`minor`，缺省 `none`）：最严重级别达到阈值时退出码为 `2`，否则为 `0`。例如「有 major 及以上的问题就让 CI 失败」：
+
+```bash
+python scripts/novelops_cli.py revise \
+  --project /path/to/project \
+  --chapter-file /path/to/project/chapters/ch01.md \
+  --json --summary --fail-on major
 ```
 
 ### LLM 起草章节 / Draft with an LLM

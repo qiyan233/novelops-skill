@@ -28,6 +28,7 @@ from novelops_common import (
     iso_now,
     parse_chinese_numeral,
     write_json,
+    posix_path,
 )
 from novelops_config import load_project_config
 
@@ -280,7 +281,7 @@ def main():
     if args.write_report:
         reviews = Path(args.project) / 'reviews'
         out = reviews / ('ch%02d.draft.json' % report['chapter'])
-        report['report_path'] = str(out)
+        report['report_path'] = posix_path(out)
         write_json(out, report)
 
     if args.json:

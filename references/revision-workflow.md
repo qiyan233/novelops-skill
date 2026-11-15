@@ -32,6 +32,11 @@
 
 快照存放在 `<project>/.novelops-state/snapshots/` 下；旧项目遗留在 `.inkos-state/` 中的历史快照仍可被 `diff_story_state.py` 读取（`latest` 与快照 ID 解析都会自动回退到旧目录）。
 
+### 复检
+`auto-revise` 改写后会用同一套审计复检修订稿，输出 `verification`：`verdict`（`improved` / `unchanged` / `regressed`）、`resolved_rules` 与 `introduced_rules`。`regressed` 或出现 `introduced_rules` 时应回退这次改写，而不是直接接受 diff——局部重写很容易修掉一处重复、又改出新的节奏问题。
+
+`verification` 只看自动规则；`audit` 报告里的 `human_only_dimensions` 仍需人工过一遍。
+
 ## 核心原则
 
 - 先定修订策略，再动正文

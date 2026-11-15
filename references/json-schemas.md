@@ -23,6 +23,7 @@
 - `chapter_metrics`
 - `findings[]`
 - `minimal_fix_plan[]`
+- `coverage`（自动检查的边界声明）
 - `report_path`（仅 `--write-report` 时出现）
 
 ### `findings[]`
@@ -32,7 +33,13 @@
 - `dimension`
 - `message`
 - `evidence[]`
+- `anchors[]`（命中问题的段落序号，`0` 起，最多 2 个；段落按空行切分，标题段不计入。没有可定位段落时为空数组——`auto-revise` 会优先消费它，空数组时才回退到 `evidence` 文本搜索）
 - `repair_targets[]`
+
+### `coverage`
+- `automated_rules[]`（本次实际跑过的规则 id，与 `summary.rules_evaluated` 一致）
+- `human_only_dimensions[]`（`dimension` / `label` / `why`：没有任何脚本检查、仍需人工或 LLM 复核的维度，如角色行为一致性、世界规则违背、资源与道具连续性、支线停滞、承诺与兑现、情节逻辑漏洞）
+- `note`（说明 `overall=pass` 只表示自动规则未触发）
 
 ### `summary.config`
 记录本次审计实际生效的项目配置（见第 14 节 `novelops.config.v1`）：
@@ -211,6 +218,14 @@
 - `spot_fix_count`
 - `human_review_needed`
 - `stale_hook_count`
+- `worst_severity`（`critical` / `major` / `minor` / `note`）
+- `severity_counts`（四档计数，knowledge-check 与 audit 合并）
+- `counts_by_rule`（audit 按 `rule_id` 计数，knowledge-check 记为 `KNOW-<type>`）
+
+顶层另有 `coverage`（直接取自 audit 报告的 `coverage`）与 `severity_counts` / `counts_by_rule`。
+
+### `--summary` 与 `--fail-on`
+加 `--summary` 时输出第 17 节 `novelops.revision-cycle-summary.v1`（只留摘要，不内联五份子报告）；`--write-report` 无论是否 `--summary` 都写全量报告。`--fail-on none|critical|major|minor`（缺省 `none`）按最严重级别决定退出码：达到阈值返回 `2`，否则 `0`。
 
 ## 9. `novelops.longdoc-reverse.v1`
 
@@ -430,8 +445,13 @@
 - `based_on`（`revision_cycle_status` / `audit_overall`）
 - `summary`（`local_finding_count` / `paragraphs_targeted` / `paragraphs_rewritten` / `paragraphs_skipped` / `applied`）
 - `targets[]`
-- `skipped_findings[]`（`rule_id` / `dimension` / `reason`：`no-evidence-anchor` / `evidence-not-found` / `evidence-too-broad` / `over-paragraph-budget`）
+- `skipped_findings[]`（`rule_id` / `dimension` / `reason`：`no-evidence-anchor` / `evidence-not-found` / `anchors-too-broad` / `evidence-too-broad` / `over-paragraph-budget`）
+  - 定位顺序：先用 finding 的 `anchors`（段落序号）；没有可用锚点才把 `evidence` 文本回搜原文
   - `evidence-too-broad`：evidence 是「突然」这类通用词，命中的段落数超过单条 finding 的预算（2 段），已按靠前的段落截取
+- `verification`（改写后复检；纯 dry-run 或无改动时为 `null`）
+  - `before` / `after`：`overall` / `counts` / `worst_severity`
+  - `resolved_rules[]` / `persisting_rules[]` / `introduced_rules[]` / `escalated_rules[]`
+  - `verdict`：`improved`（有规则消失或最严重级别变好）/ `unchanged` / `regressed`（冒出更严重的问题）
 - `diff[]`（整章 unified diff，最多 400 行）/ `diff_truncated`
 - `snapshot`（仅 `--apply` 且有改动时：`snapshot_id` / `snapshot_dir` / `chapter_backup`；否则 `null`）
 - `report_path`（仅 `--write-report` 时出现）
@@ -444,6 +464,19 @@
 - `status`（`rewritten` / `unchanged` / `skipped`）
 - `skip_reason`（`empty-rewrite` / `rewrite-contains-heading` / `rewrite-out-of-bounds` 等）
 - `payload`（仅 dry-run：该段的完整 chat 请求体）
+
+## 17. `novelops.revision-cycle-summary.v1`
+
+来源：`scripts/run_revision_cycle.py --json --summary`（CLI：`revise --json --summary`）
+
+核心字段：
+- `schema_version` / `tool` / `generated_at`
+- `project` / `chapter` / `chapter_file`
+- `status`
+- `summary`（同第 8 节，含 `worst_severity` / `severity_counts` / `counts_by_rule`）
+- `coverage`（同 audit 的 `coverage`）
+- `recommended_sequence[]`
+- `reports`（`full_report`：`--write-report` 时的完整报告路径，否则 `null`；其余子报告只以计数与规则 id 出现，不再内联全文）
 
 ## 稳定性原则
 

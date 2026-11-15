@@ -5,6 +5,7 @@ from pathlib import Path
 
 from audit_chapter import build_report
 from novelops_common import iso_now, read_text, write_json
+from novelops_common import posix_path
 
 LOCAL_DIMENSIONS = set([
     'repetition-fatigue',
@@ -127,7 +128,7 @@ def main():
                 'Pass --project/--chapter-file instead, or omit --write-report.')
         chapter_stem = Path(chapter_ref).stem
         out = Path(project_dir) / 'reviews' / ('%s.spot-fixes.json' % chapter_stem)
-        data['report_path'] = str(out)
+        data['report_path'] = posix_path(out)
         write_json(out, data)
 
     if args.json:

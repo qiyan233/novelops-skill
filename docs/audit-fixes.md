@@ -157,7 +157,7 @@ malformed belief 被标出。
 - `novelops_cli.sh()` 硬编码 `bash` 且无任何调用方。删除。
 - 项目模板缺 `.gitignore`，用户把小说纳入版本控制时会把 `.novelops-state/` 快照一起提交。模板补 `.gitignore`，仓库根 `.gitignore` 同步补状态目录。
 - `reverse_long_document` 分块按起止章号命名，源文档章号重复时节名相同、后写覆盖先写。文件名加块序号。
-- `hook_report.parse_line` 只认半角括号，全角 `（opened：ch3）` 不解析。**未修**——模板与文档统一使用半角，影响面小。
+- `hook_report.parse_line` 只认半角括号，全角 `（opened：ch3）` 不解析。**已在 2026-11 轮修复**（见下节）。
 
 ---
 
@@ -181,8 +181,25 @@ malformed belief 被标出。
 - 实现过程中由测试抓出并修正的两处自引入缺陷：净化顺序（开场白+围栏组合）、
   事实关键词过度排除（「真相」）导致的回归。
 
+## 2026-11 轮：报告可信度与初始化安全
+
+这一轮针对「报告说了什么」与「报告能改什么」的一致性，以及 `init --force` 的数据安全。用户可见的变化见 [`../CHANGELOG.md`](../CHANGELOG.md) 的 Unreleased 段。
+
+| # | 问题 | 根因 | 修复 |
+|---|---|---|---|
+| 1 | 审计 finding 无法定位段落 | 只有 `evidence[]` 文本，`AUD-104`（段落节奏）根本没有 evidence，`auto-revise` 只能记 `no-evidence-anchor` 跳过 | finding 增加 `anchors[]`（空行切段后的段落序号，最多 2 个，标题段不计）；`auto_revise.collect_targets` 优先消费锚点，锚点为空才回搜 evidence |
+| 2 | 改写后没有复检 | `auto-revise` 只输出 diff，改写是否真的解决问题、有没有改出新问题没有人知道 | 改写完成后用同一套审计复检修订稿（`build_report(chapter_text=...)` 免落盘），输出 `verification`：before/after、resolved/persisting/introduced/escalated、verdict |
+| 3 | `overall=pass` 被当成「没问题」 | 23 个审计维度里只有一部分有脚本规则，OOC、世界规则、资源记账、支线停滞、承诺兑现、逻辑漏洞全靠人 | 报告增加 `coverage`：`automated_rules` 与 `human_only_dimensions`（含 label/why），并在 `note` 里写明 pass 的语义边界 |
+| 4 | `revise` 单次输出过大 | 五份子报告全文内联，单章可达数百 KB，人读不动、CI 也不好用 | 新增 `--summary`（契约 `novelops.revision-cycle-summary.v1`）与 `--fail-on none|critical|major|minor`（达到阈值退出码 2）；`--write-report` 仍写全量 |
+| 5 | `init --force` 静默覆盖用户真值文件 | `copytree(..., dirs_exist_ok=True)` 直接盖写，且无备份 | 覆盖前备份到 `.novelops-state/backups/pre-init-<时间戳>/`；新增 `--keep-modified` 逐文件判断（缺失补、已改留） |
+| 6 | 报告路径分隔符混排 | 各处直接 `str(path)`，Windows 出反斜杠，同一份报告里 `examples\demo-novel` 与 `examples/demo-novel/chapters/ch02.md` 并存 | 统一 `novelops_common.posix_path()`，所有报告序列化点改用它 |
+| 7 | 全角钩子元信息不解析 | `hook_report.parse_line` 只认半角括号与冒号 | 新增 `normalize_meta()`（全角括号/冒号/逗号归一），先归一状态与章节号，再从原文剥 hook 文本（保留全角原样） |
+
+验证：`scripts/smoke_test.py` 新增 5 组断言（init 备份与 `--keep-modified`、审计 `anchors`/`coverage`、`auto-revise` 锚点定位与 `verification`、`revise --summary`/`--fail-on`、全角钩子），全套仍全绿；demo 实测 `--fail-on minor` 退出码 2、`--fail-on major` 退出码 0。
+
 ## 未处理
 
-- `hook_report` 全角括号容忍（见上）。
 - `inkos_cli.py` / `inkos_common.py` 兼容垫片无消费者，保留以兼容旧调用方。
 - `docs/cli.md` 仅覆盖 18 个子命令中的 11 个（其余在 `SKILL.md` 有记录），属文档覆盖不全，非实现缺陷。
+- `knowledge_check` 的角色认知仍只读 `current_state.md` 的 `## Character beliefs`，不读结构更全的 `character_knowledge.md`（下一轮候选）。
+- `draft` 的单章契约只校验标题数量，没有字数下限与「是否写到了下一章」的检测（下一轮候选）。

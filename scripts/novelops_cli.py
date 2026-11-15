@@ -5,11 +5,13 @@ import subprocess
 import sys
 from pathlib import Path
 
-from novelops_common import atomic_write_text, configure_stdio_utf8
+from novelops_common import atomic_write_text, compact_utc_stamp, configure_stdio_utf8, state_root
 
 ROOT = Path(__file__).resolve().parent
 PROJECT_ROOT = ROOT.parent
 TEMPLATE_DIR = PROJECT_ROOT / 'assets' / 'project-template'
+TITLE_PLACEHOLDER = '{{BOOK_TITLE}}'
+TITLE_FILES = {'README-project.md', 'story_bible.md', 'book_rules.md', 'outline.md', 'current_state.md'}
 
 configure_stdio_utf8()
 
@@ -23,26 +25,91 @@ def py(script, args):
     return [sys.executable, str(ROOT / script)] + args
 
 
-def init_project(project, title, force=False):
+def template_relpaths():
+    return [path.relative_to(TEMPLATE_DIR) for path in sorted(TEMPLATE_DIR.rglob('*')) if path.is_file()]
+
+
+def render_template(rel, title):
+    text = (TEMPLATE_DIR / rel).read_text(encoding='utf-8')
+    if rel.as_posix() in TITLE_FILES:
+        return text.replace(TITLE_PLACEHOLDER, title)
+    return text
+
+
+def backup_before_overwrite(project, rels):
+    """覆盖前先把将被改写的文件备份到 .novelops-state/backups/pre-init-<stamp>/。
+
+    这是 `init --force` 唯一的不可逆风险点：用户可能已经在模板同名文件里
+    写了数十章的真值数据。备份失败就不允许继续覆盖。
+    """
+    if not rels:
+        return None
+    dest = state_root(project) / 'backups' / ('pre-init-%s' % compact_utc_stamp())
+    for rel in rels:
+        target = dest / rel
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(str(project / rel), str(target))
+    return dest
+
+
+def plan_init(project, title, keep_modified):
+    """逐文件决定 create / overwrite / unchanged / skip-modified。"""
+    plan = []
+    for rel in template_relpaths():
+        target = project / rel
+        rendered = render_template(rel, title)
+        if not target.exists():
+            plan.append((rel, 'create', rendered))
+            continue
+        try:
+            current = target.read_text(encoding='utf-8')
+        except UnicodeDecodeError:
+            current = None
+        if current == rendered:
+            plan.append((rel, 'unchanged', rendered))
+        elif keep_modified:
+            plan.append((rel, 'skip-modified', rendered))
+        else:
+            plan.append((rel, 'overwrite', rendered))
+    return plan
+
+
+def init_project(project, title, force=False, keep_modified=False):
     project = Path(project)
     if project.exists() and not project.is_dir():
         raise SystemExit('Init target exists but is not a directory: %s' % project)
-    if project.exists() and not force and any(project.iterdir()):
-        raise SystemExit('Refusing to initialize non-empty directory: %s. Use --force to overwrite template files.' % project)
+    non_empty = project.exists() and any(project.iterdir())
+    if non_empty and not force and not keep_modified:
+        raise SystemExit(
+            'Refusing to initialize non-empty directory: %s. '
+            'Use --force to back up existing files then reset them to the template, '
+            'or --keep-modified to only fill in missing files.' % project)
     project.mkdir(parents=True, exist_ok=True)
-    shutil.copytree(TEMPLATE_DIR, project, dirs_exist_ok=True)
     (project / 'chapters').mkdir(parents=True, exist_ok=True)
     (project / 'reviews').mkdir(parents=True, exist_ok=True)
 
-    for name in ['README-project.md', 'story_bible.md', 'book_rules.md', 'outline.md', 'current_state.md']:
-        path = project / name
-        if not path.exists():
-            continue
-        text = path.read_text(encoding='utf-8')
-        atomic_write_text(path, text.replace('{{BOOK_TITLE}}', title))
+    plan = plan_init(project, title, keep_modified)
+    overwritten = [rel for rel, action, _ in plan if action == 'overwrite']
+    backup_dir = backup_before_overwrite(project, overwritten)
+
+    created = []
+    for rel, action, rendered in plan:
+        if action in ('create', 'overwrite'):
+            atomic_write_text(project / rel, rendered)
+            created.append(rel)
+
+    skipped = [rel.as_posix() for rel, action, _ in plan if action == 'skip-modified']
+    unchanged = sum(1 for _, action, _ in plan if action == 'unchanged')
 
     print('Initialized novel project at: %s' % project)
     print('Title: %s' % title)
+    print('Files: %d written, %d unchanged, %d skipped (modified)'
+          % (len(created), unchanged, len(skipped)))
+    if skipped:
+        print('Skipped (you edited these; nothing was overwritten): %s' % ', '.join(skipped))
+    if backup_dir is not None:
+        print('Backup of overwritten files: %s' % backup_dir)
+
 
 
 def main():
@@ -55,7 +122,10 @@ def main():
     p = sub.add_parser('init', help='Initialize a novel project.')
     p.add_argument('project')
     p.add_argument('title')
-    p.add_argument('--force', action='store_true', help='Allow initialization inside a non-empty directory and overwrite template files.')
+    p.add_argument('--force', action='store_true',
+                   help='Allow a non-empty directory and reset template files (existing files are backed up first).')
+    p.add_argument('--keep-modified', action='store_true',
+                   help='Only create missing files; never overwrite files you already edited.')
 
     p = sub.add_parser('context', help='Build next-chapter context.')
     p.add_argument('--project', required=True)
@@ -133,6 +203,10 @@ def main():
     p.add_argument('--skip-knowledge-check', action='store_true')
     p.add_argument('--json', action='store_true')
     p.add_argument('--write-report', action='store_true')
+    p.add_argument('--summary', action='store_true',
+                   help='Compact JSON (counts + coverage) instead of inlining all five reports; use with --json.')
+    p.add_argument('--fail-on', choices=['none', 'critical', 'major', 'minor'], default='none',
+                   help='Exit 2 when the worst finding reaches this severity (CI gate).')
 
     p = sub.add_parser('draft', help='Draft the next chapter with an OpenAI-compatible LLM (Hermes-first).')
     p.add_argument('--project', required=True)
@@ -192,7 +266,7 @@ def main():
     args = parser.parse_args()
 
     if args.command == 'init':
-        init_project(args.project, args.title, force=args.force)
+        init_project(args.project, args.title, force=args.force, keep_modified=args.keep_modified)
     elif args.command == 'context':
         if args.recent_chapters < 0:
             raise SystemExit('--recent-chapters must be >= 0')
@@ -301,6 +375,10 @@ def main():
             cmd.append('--json')
         if args.write_report:
             cmd.append('--write-report')
+        if args.summary:
+            cmd.append('--summary')
+        if args.fail_on != 'none':
+            cmd.extend(['--fail-on', args.fail_on])
         run(cmd)
     elif args.command == 'draft':
         cmd = py('draft_chapter.py', ['--project', args.project])

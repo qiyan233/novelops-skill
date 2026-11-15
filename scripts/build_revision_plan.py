@@ -5,6 +5,7 @@ from pathlib import Path
 
 from audit_chapter import build_report
 from novelops_common import iso_now, write_json
+from novelops_common import posix_path
 
 SCOPE_BY_DIMENSION = {
     'information-boundary': 'scene',
@@ -170,7 +171,7 @@ def main():
                 'Pass --project/--chapter-file instead, or omit --write-report.')
         chapter_stem = Path(chapter_ref).stem
         out = Path(project_dir) / 'reviews' / ('%s.revision-plan.json' % chapter_stem)
-        plan['report_path'] = str(out)
+        plan['report_path'] = posix_path(out)
         write_json(out, plan)
 
     if args.json:

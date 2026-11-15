@@ -16,6 +16,7 @@ import re
 from pathlib import Path
 
 from audit_chapter import SEVERITY_ORDER
+from audit_chapter import build_report as build_audit_report
 from build_write_next_packet import book_constraints
 from draft_chapter import find_chapter_headings
 from llm_client import (
@@ -33,8 +34,10 @@ from novelops_common import (
     iso_now,
     parse_chapter_number,
     read_text,
+    split_paragraphs_with_offsets,
     state_root,
     write_json,
+    posix_path,
 )
 from novelops_config import load_project_config
 from run_revision_cycle import build_cycle
@@ -60,18 +63,12 @@ REWRITE_SYSTEM_PROMPT = (
 
 
 def split_paragraphs(text):
-    """按空行切段并记录 (start, end) 偏移，供精确重建全文。"""
-    paragraphs = []
-    pos = 0
-    for match in PARA_SPLIT_RE.finditer(text):
-        segment = text[pos:match.start()]
-        if segment.strip():
-            paragraphs.append({'index': len(paragraphs), 'start': pos, 'end': match.start(), 'text': segment})
-        pos = match.end()
-    tail = text[pos:]
-    if tail.strip():
-        paragraphs.append({'index': len(paragraphs), 'start': pos, 'end': len(text), 'text': tail})
-    return paragraphs
+    """按空行切段并记录 (start, end) 偏移，供精确重建全文。
+
+    切分口径来自 novelops_common，与审计的段落锚点共用同一实现——
+    两处各写一份的话，`anchors: [12]` 可能指向另一段。
+    """
+    return split_paragraphs_with_offsets(text)
 
 
 def is_heading_paragraph(text):
@@ -79,41 +76,52 @@ def is_heading_paragraph(text):
 
 
 def collect_targets(chapter_text, findings, max_paragraphs):
-    """把 local-dimension findings 映射到包含段落，合并同段，返回 (targets, skipped_findings)。"""
+    """把 local-dimension findings 映射到包含段落，合并同段，返回 (targets, skipped_findings)。
+
+    优先用审计给出的 `anchors`（段落索引）：那是审计在词表命中时直接记下的位置，
+    比事后拿 evidence 反查更准（AUD-104 这类规则原来根本没有 evidence）。
+    evidence 仍保留为兜底，兼容旧报告和外部来源的 findings。
+    """
     paragraphs = split_paragraphs(chapter_text)
     skipped_findings = []
     para_findings = {}
     for finding in findings:
         if finding['dimension'] not in LOCAL_DIMENSIONS:
             continue
-        evidence = [token for token in (finding.get('evidence') or []) if token]
-        if not evidence:
-            skipped_findings.append({
-                'rule_id': finding.get('rule_id'),
-                'dimension': finding['dimension'],
-                'reason': 'no-evidence-anchor',
-            })
-            continue
-        hit_indexes = set()
-        for token in evidence:
-            for para in paragraphs:
-                if is_heading_paragraph(para['text']):
-                    continue
-                if token in para['text']:
-                    hit_indexes.add(para['index'])
-        if not hit_indexes:
-            skipped_findings.append({
-                'rule_id': finding.get('rule_id'),
-                'dimension': finding['dimension'],
-                'reason': 'evidence-not-found',
-            })
-            continue
+        anchor_indexes = {i for i in (finding.get('anchors') or [])
+                          if isinstance(i, int) and 0 <= i < len(paragraphs)
+                          and not is_heading_paragraph(paragraphs[i]['text'])}
+        if anchor_indexes:
+            hit_indexes = set(anchor_indexes)
+        else:
+            evidence = [token for token in (finding.get('evidence') or []) if token]
+            if not evidence:
+                skipped_findings.append({
+                    'rule_id': finding.get('rule_id'),
+                    'dimension': finding['dimension'],
+                    'reason': 'no-evidence-anchor',
+                })
+                continue
+            hit_indexes = set()
+            for token in evidence:
+                for para in paragraphs:
+                    if is_heading_paragraph(para['text']):
+                        continue
+                    if token in para['text']:
+                        hit_indexes.add(para['index'])
+            if not hit_indexes:
+                skipped_findings.append({
+                    'rule_id': finding.get('rule_id'),
+                    'dimension': finding['dimension'],
+                    'reason': 'evidence-not-found',
+                })
+                continue
         if len(hit_indexes) > MAX_PARAGRAPHS_PER_FINDING:
             kept = sorted(hit_indexes)[:MAX_PARAGRAPHS_PER_FINDING]
             skipped_findings.append({
                 'rule_id': finding.get('rule_id'),
                 'dimension': finding['dimension'],
-                'reason': 'evidence-too-broad',
+                'reason': 'anchors-too-broad' if anchor_indexes else 'evidence-too-broad',
             })
             hit_indexes = set(kept)
         for index in hit_indexes:
@@ -214,7 +222,7 @@ def build_auto_revise(project, chapter_file, dry_run=False, apply_changes=False,
         'tool': 'auto_revise',
         'generated_at': iso_now(),
         'project': cycle['project'],
-        'chapter_file': str(chapter_file),
+        'chapter_file': posix_path(chapter_file),
         'chapter': parse_chapter_number(chapter_file.stem),
         'mode': mode,
         'llm': {
@@ -243,6 +251,7 @@ def build_auto_revise(project, chapter_file, dry_run=False, apply_changes=False,
         'skipped_findings': skipped_findings,
         'diff': [],
         'diff_truncated': False,
+        'verification': None,
         'snapshot': None,
     }
 
@@ -328,6 +337,11 @@ def build_auto_revise(project, chapter_file, dry_run=False, apply_changes=False,
         else:
             report['diff'] = diff_lines
 
+    # 只给 diff 的话，人得自己再跑一遍审计才知道「修好了没有、有没有改坏」。
+    # 复检是纯本地的，不调模型，代价可以忽略。
+    if revised_text != chapter_text:
+        report['verification'] = verify_revision(project, chapter_file, revised_text, cycle['audit'])
+
     if apply_changes and revised_text != chapter_text:
         stem = chapter_file.stem
         manifest = snapshot(project, label='auto-revise-%s' % stem,
@@ -344,9 +358,68 @@ def build_auto_revise(project, chapter_file, dry_run=False, apply_changes=False,
         report['snapshot'] = {
             'snapshot_id': manifest['snapshot_id'],
             'snapshot_dir': manifest['snapshot_dir'],
-            'chapter_backup': str(backup_path),
+            'chapter_backup': posix_path(backup_path),
         }
     return report
+
+
+def audit_signature(report):
+    """把审计报告压成 {rule_id: severity}，用于比较改写前后的规则集合。"""
+    return {finding['rule_id']: finding['severity'] for finding in report.get('findings', [])}
+
+
+def worst_severity(signature):
+    if not signature:
+        return None
+    return min(signature.values(), key=lambda severity: SEVERITY_ORDER.get(severity, 99))
+
+
+def verify_revision(project, chapter_file, revised_text, before_audit):
+    """对改写后的正文重跑一次审计，回答「修好了没有、有没有改坏」。
+
+    判定优先级：出现新的更严重问题即 regressed；否则有规则消失或最严重级别下降
+    即 improved；两者都没有则 unchanged。introduced_rules 即使只是 note 也会
+    列出来，方便人判断这次重写是否把语气带偏。
+    """
+    after_audit = build_audit_report(project, chapter_file, chapter_text=revised_text)
+    before = audit_signature(before_audit)
+    after = audit_signature(after_audit)
+
+    resolved = sorted(set(before) - set(after))
+    introduced = sorted(set(after) - set(before))
+    persisting = sorted(set(before) & set(after))
+    escalated = sorted(rule for rule in persisting
+                       if SEVERITY_ORDER[after[rule]] < SEVERITY_ORDER[before[rule]])
+    before_worst = worst_severity(before)
+    after_worst = worst_severity(after)
+
+    def rank(severity):
+        return SEVERITY_ORDER.get(severity, 99)
+
+    if escalated or (before_worst and after_worst and rank(after_worst) < rank(before_worst)):
+        verdict = 'regressed'
+    elif resolved or (before_worst and after_worst and rank(after_worst) > rank(before_worst)):
+        verdict = 'improved'
+    else:
+        verdict = 'unchanged'
+
+    return {
+        'before': {
+            'overall': before_audit.get('overall'),
+            'counts': (before_audit.get('summary') or {}).get('counts'),
+            'worst_severity': before_worst,
+        },
+        'after': {
+            'overall': after_audit.get('overall'),
+            'counts': (after_audit.get('summary') or {}).get('counts'),
+            'worst_severity': after_worst,
+        },
+        'resolved_rules': resolved,
+        'persisting_rules': persisting,
+        'introduced_rules': introduced,
+        'escalated_rules': escalated,
+        'verdict': verdict,
+    }
 
 
 def print_markdown(report):
@@ -360,6 +433,15 @@ def print_markdown(report):
     if report['snapshot']:
         print('- snapshot: %s' % report['snapshot']['snapshot_id'])
         print('- chapter_backup: %s' % report['snapshot']['chapter_backup'])
+    verification = report.get('verification')
+    if verification:
+        print()
+        print('## Verification')
+        print('- verdict: %s' % verification['verdict'])
+        print('- resolved: %s' % (', '.join(verification['resolved_rules']) or 'none'))
+        print('- persisting: %s' % (', '.join(verification['persisting_rules']) or 'none'))
+        print('- introduced: %s' % (', '.join(verification['introduced_rules']) or 'none'))
+        print('- escalated: %s' % (', '.join(verification['escalated_rules']) or 'none'))
     print()
     print('## Diff')
     if not report['diff']:
@@ -413,7 +495,7 @@ def main():
 
     if args.write_report:
         out = Path(args.project) / 'reviews' / ('%s.auto-revise.json' % Path(args.chapter_file).stem)
-        report['report_path'] = str(out)
+        report['report_path'] = posix_path(out)
         write_json(out, report)
 
     if args.json:

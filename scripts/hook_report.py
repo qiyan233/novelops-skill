@@ -10,6 +10,7 @@ from novelops_common import (
     parse_chapter_number,
     read_text,
     require_project_markers,
+    posix_path,
 )
 
 STATUS_ALIASES = {
@@ -23,18 +24,30 @@ STATUS_ALIASES = {
 
 STATUS_ORDER = ['OPEN', 'ADVANCED', 'PAID_OFF', 'DEFERRED', 'BROKEN']
 
+# 中文输入法写出的是全角括号与全角冒号：「（opened：ch3）」。
+# 旧实现只认半角，这类行会整行落到 fallback，被当成「无年龄的 OPEN」，
+# 伏笔老化报告因此静默失真。
+FULLWIDTH_MAP = str.maketrans({'（': '(', '）': ')', '：': ':', '，': ',', '　': ' '})
+CHAPTER_REF_RE = re.compile(r'(?:opened|updated|closed)\s*:\s*(?:ch|chapter|第)?\s*(\d+)\s*章?', flags=re.I)
+META_PAREN_RE = re.compile(r'[\(（][^\)）]*[\)）]')
+
+
+def normalize_meta(text):
+    """把全角标点归一成半角，仅用于解析，不影响写回的报告文本。"""
+    return text.translate(FULLWIDTH_MAP)
+
 
 def parse_line(line):
     match = re.match(r'^-\s*\[([^\]]+)\]\s*(.+)$', line.strip())
     if not match:
         return None
-    raw_status = match.group(1).strip().upper()
+    raw_status = normalize_meta(match.group(1).strip()).upper()
     status = STATUS_ALIASES.get(raw_status)
     if not status:
         return None
     rest = match.group(2).strip()
-    chapter_match = re.search(r'\b(?:opened|updated|closed)\s*:\s*ch\s*(\d+)\b', rest, flags=re.I)
-    text = re.sub(r'\([^\)]*\)', '', rest).strip()
+    chapter_match = CHAPTER_REF_RE.search(normalize_meta(rest))
+    text = META_PAREN_RE.sub('', rest).strip()
     return {
         'status': status,
         'hook': text,
@@ -98,7 +111,7 @@ def build_report(project, stale_after):
         'schema_version': 'novelops.hook-report.v1',
         'tool': 'hook_report',
         'generated_at': iso_now(),
-        'project': str(project),
+        'project': posix_path(project),
         'config': {'stale_after': stale_after},
         'summary': {
             'hook_count': len(hooks),

@@ -5,6 +5,7 @@ import json
 from pathlib import Path
 
 from novelops_common import iso_now, read_text, require_project_markers, snapshot_roots, state_root
+from novelops_common import posix_path
 from snapshot_story_state import TRACKED_FILES
 
 
@@ -21,7 +22,7 @@ def resolve_snapshot(project, ref):
     project = Path(project)
     roots = snapshot_roots(project)
     if ref == 'current':
-        return {'kind': 'current', 'id': 'current', 'path': project, 'path_str': str(project)}
+        return {'kind': 'current', 'id': 'current', 'path': project, 'path_str': posix_path(project)}
     if ref == 'latest':
         choices = sorted(
             [p for root in roots for p in root.iterdir() if is_snapshot_dir(p)],
@@ -30,14 +31,14 @@ def resolve_snapshot(project, ref):
         if not choices:
             raise SystemExit('No snapshots found under %s' % (state_root(project) / 'snapshots'))
         target = choices[-1]
-        return {'kind': 'snapshot', 'id': target.name, 'path': target, 'path_str': str(target)}
+        return {'kind': 'snapshot', 'id': target.name, 'path': target, 'path_str': posix_path(target)}
     path = Path(ref)
     if is_snapshot_dir(path):
-        return {'kind': 'snapshot', 'id': path.name, 'path': path, 'path_str': str(path)}
+        return {'kind': 'snapshot', 'id': path.name, 'path': path, 'path_str': posix_path(path)}
     for root in roots:
         target = root / ref
         if is_snapshot_dir(target):
-            return {'kind': 'snapshot', 'id': target.name, 'path': target, 'path_str': str(target)}
+            return {'kind': 'snapshot', 'id': target.name, 'path': target, 'path_str': posix_path(target)}
     raise SystemExit('Snapshot ref not found (or incomplete, missing manifest.json): %s' % ref)
 
 
@@ -94,7 +95,7 @@ def diff_report(project, from_ref, to_ref):
         'schema_version': 'novelops.state-diff.v1',
         'tool': 'diff_story_state',
         'generated_at': iso_now(),
-        'project': str(project),
+        'project': posix_path(project),
         'from': {'kind': left['kind'], 'id': left['id'], 'path': left['path_str']},
         'to': {'kind': right['kind'], 'id': right['id'], 'path': right['path_str']},
         'summary': {

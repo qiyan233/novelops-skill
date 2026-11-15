@@ -6,6 +6,7 @@
 """
 import json
 from pathlib import Path
+from novelops_common import posix_path
 
 CONFIG_FILE_NAME = 'novelops.config.json'
 
@@ -15,7 +16,7 @@ VALID_KEYWORD_MODES = ('extend', 'replace', 'disable')
 def config_file_path(project):
     """配置文件存在时返回其路径字符串，否则返回 None。"""
     path = Path(project) / CONFIG_FILE_NAME
-    return str(path) if path.is_file() else None
+    return posix_path(path) if path.is_file() else None
 
 
 def load_project_config(project):

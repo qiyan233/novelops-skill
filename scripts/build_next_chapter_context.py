@@ -12,6 +12,7 @@ from novelops_common import (
     latest_sections,
     read_text,
     require_project_markers,
+    posix_path,
 )
 
 FILES = [
@@ -113,7 +114,7 @@ def build_context_report(project, recent_chapters, max_chars_per_file, chapter=N
         'schema_version': 'novelops.next-context.v1',
         'tool': 'build_next_chapter_context',
         'generated_at': iso_now(),
-        'project': str(project),
+        'project': posix_path(project),
         'target_chapter': target_chapter,
         'config': {
             'recent_chapters': recent_chapters,

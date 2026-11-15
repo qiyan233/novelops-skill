@@ -4,7 +4,8 @@ import json
 import re
 from pathlib import Path
 
-from novelops_common import CHAPTER_HEADING_RE, extract_bullets, extract_keywords, iso_now, latest_sections, read_text, require_existing_file, require_project_markers, write_json
+from novelops_common import CHAPTER_HEADING_RE, extract_bullets, extract_keywords, iso_now, latest_sections, read_text, require_existing_file, require_project_markers, split_paragraphs_with_offsets, write_json
+from novelops_common import posix_path
 from novelops_config import config_file_path, load_project_config, resolve_disabled, resolve_keyword_table, resolve_thresholds
 
 SEVERITY_ORDER = {'critical': 0, 'major': 1, 'minor': 2, 'note': 3}
@@ -50,6 +51,24 @@ CONFIGURABLE_RULE_IDS = [
 
 VALID_AUDIT_SECTION_KEYS = ('keywords', 'thresholds', 'rules_disabled')
 
+# 这些维度在 references/audit-dimensions.md 里有定义，但脚本并不实现：
+# 它们需要理解动机、设定条文或因果链，关键词计数做不到。显式列出来，
+# 是为了避免把 overall=pass 误读成「这些维度也已通过」。
+HUMAN_ONLY_DIMENSIONS = [
+    {'dimension': 'character-ooc', 'label': '角色行为一致性（OOC）',
+     'why': '需要判断人物动机与前后语境，词表规则无法覆盖。'},
+    {'dimension': 'world-rule', 'label': '世界规则 / 设定违背',
+     'why': '设定条文与正文事实的语义比对不在启发式范围内。'},
+    {'dimension': 'resource-tracking', 'label': '资源与道具连续性',
+     'why': '道具增减需要跨章账本，脚本只做关键词重叠。'},
+    {'dimension': 'subplot-stagnation', 'label': '支线停滞',
+     'why': 'subplot_board 只被读取，没有推进度计算。'},
+    {'dimension': 'promise-payoff', 'label': '承诺与兑现（伏笔质量）',
+     'why': 'hook_report 只算年龄，不判断兑现是否成立。'},
+    {'dimension': 'logic-hole', 'label': '情节逻辑漏洞',
+     'why': '需要因果推理，非词表可覆盖。'},
+]
+
 
 def resolve_audit_config(project, config=None):
     """解析项目配置的 audit 节，返回 (关键词表, 阈值表, 禁用集合, summary.config 块)。"""
@@ -85,7 +104,32 @@ def resolve_audit_config(project, config=None):
     return tables, thresholds, disabled, config_summary
 
 
-def add(findings, rule_id, severity, dimension, message, evidence=None, repair_targets=None):
+def anchor_paragraphs(chapter, tokens, limit=2):
+    """把命中词映射成段落索引，供 auto_revise / spot-fixes 直接定位。
+
+    与 auto_revise 共用 split_paragraphs_with_offsets 的空行切分口径，
+    保证「审计说的第 N 段」就是「改写工具里的第 N 段」。整章没有空行时
+    （切不出有意义段落）返回空列表，退回 token 搜索，避免锚到第 0 段
+    等于重写全章。
+    """
+    paragraphs = split_paragraphs_with_offsets(chapter)
+    if len(paragraphs) < 2:
+        return []
+    wanted = [token for token in tokens if token]
+    if not wanted:
+        return []
+    indexes = []
+    for para in paragraphs:
+        if para['text'].lstrip().startswith('#'):
+            continue
+        if any(token in para['text'] for token in wanted):
+            indexes.append(para['index'])
+            if len(indexes) >= limit:
+                break
+    return indexes
+
+
+def add(findings, rule_id, severity, dimension, message, evidence=None, repair_targets=None, anchors=None):
     findings.append({
         'rule_id': rule_id,
         'severity': severity,
@@ -93,6 +137,7 @@ def add(findings, rule_id, severity, dimension, message, evidence=None, repair_t
         'message': message,
         'evidence': evidence or [],
         'repair_targets': repair_targets or [],
+        'anchors': anchors or [],
     })
 
 
@@ -136,11 +181,11 @@ def open_hook_keywords(pending_hooks):
     return open_hooks, list(dict.fromkeys(keywords))
 
 
-def build_report(project, chapter_file, config=None):
+def build_report(project, chapter_file, config=None, chapter_text=None):
     project = require_project_markers(project)
     kw, thresholds, disabled, config_summary = resolve_audit_config(project, config)
     chapter_file = require_existing_file(chapter_file, 'Chapter file')
-    chapter = read_text(chapter_file)
+    chapter = chapter_text if chapter_text is not None else read_text(chapter_file)
     current_state = read_text(project / 'current_state.md')
     book_rules = read_text(project / 'book_rules.md')
     pending_hooks = read_text(project / 'pending_hooks.md')
@@ -158,15 +203,20 @@ def build_report(project, chapter_file, config=None):
             'schema_version': 'novelops.audit-report.v1',
             'tool': 'audit_chapter',
             'generated_at': iso_now(),
-            'project': str(project),
-            'chapter': str(chapter_file),
-            'chapter_file': str(chapter_file),
+            'project': posix_path(project),
+            'chapter': posix_path(chapter_file),
+            'chapter_file': posix_path(chapter_file),
             'overall': 'block',
             'summary': {'counts': counts, 'finding_count': 1, 'rules_evaluated': [], 'config': config_summary},
-            'source_files': [str(chapter_file)],
+            'source_files': [posix_path(chapter_file)],
             'chapter_metrics': chapter_metrics(chapter, kw['TIME_JUMPS']),
             'findings': findings,
             'minimal_fix_plan': ['Provide chapter text before auditing.'],
+            'coverage': {
+                'automated_rules': [],
+                'human_only_dimensions': HUMAN_ONLY_DIMENSIONS,
+                'note': '空章节未做任何自动检查。',
+            },
         }
 
     if 'AUD-101' not in disabled:
@@ -176,7 +226,7 @@ def build_report(project, chapter_file, config=None):
             count = chapter.count(word)
             if count >= th101['min_count']:
                 sev = 'major' if count >= th101['major_at'] else 'minor'
-                add(findings, 'AUD-101', sev, 'repetition-fatigue', "Transition word '%s' appears %s times." % (word, count), evidence=[word], repair_targets=["Reduce repeated transition word '%s'." % word])
+                add(findings, 'AUD-101', sev, 'repetition-fatigue', "Transition word '%s' appears %s times." % (word, count), evidence=[word], repair_targets=["Reduce repeated transition word '%s'." % word], anchors=anchor_paragraphs(chapter, [word]))
                 fix_plan.append("Reduce repeated transition word '%s'." % word)
 
     if 'AUD-102' not in disabled:
@@ -184,14 +234,14 @@ def build_report(project, chapter_file, config=None):
         report_hits = [w for w in kw['REPORT_SPEAK'] if w in chapter]
         if report_hits:
             sev = 'major' if len(report_hits) >= thresholds['AUD-102']['major_at'] else 'minor'
-            add(findings, 'AUD-102', sev, 'report-speak', 'Abstract/report-like wording detected: %s.' % ', '.join(report_hits[:6]), evidence=report_hits[:6], repair_targets=['Replace abstract explanation with concrete action, sensory evidence, or dialogue.'])
+            add(findings, 'AUD-102', sev, 'report-speak', 'Abstract/report-like wording detected: %s.' % ', '.join(report_hits[:6]), evidence=report_hits[:6], repair_targets=['Replace abstract explanation with concrete action, sensory evidence, or dialogue.'], anchors=anchor_paragraphs(chapter, report_hits))
             fix_plan.append('Replace abstract explanation with concrete action, sensory evidence, or dialogue.')
 
     if 'AUD-103' not in disabled:
         rules_evaluated.append('AUD-103')
         crowd_hits = [w for w in kw['CROWD_CLICHES'] if w in chapter]
         if crowd_hits:
-            add(findings, 'AUD-103', 'minor', 'crowd-cliche', 'Generic crowd-response cliché detected: %s.' % ', '.join(crowd_hits), evidence=crowd_hits, repair_targets=['Replace generic crowd reaction with 1-2 specific character reactions.'])
+            add(findings, 'AUD-103', 'minor', 'crowd-cliche', 'Generic crowd-response cliché detected: %s.' % ', '.join(crowd_hits), evidence=crowd_hits, repair_targets=['Replace generic crowd reaction with 1-2 specific character reactions.'], anchors=anchor_paragraphs(chapter, crowd_hits))
             fix_plan.append('Replace generic crowd reaction with 1-2 specific character reactions.')
 
     if 'AUD-104' not in disabled:
@@ -203,7 +253,28 @@ def build_report(project, chapter_file, config=None):
             avg = sum(lens) / float(len(lens))
             close = sum(1 for x in lens if abs(x - avg) <= th104['closeness_chars'])
             if close / float(len(lens)) >= th104['uniform_ratio']:
-                add(findings, 'AUD-104', 'minor', 'paragraph-monotony', 'Paragraph lengths are too uniform; rhythm may feel machine-made.', repair_targets=['Vary paragraph length and beat density.'])
+                # 给出可定位段落：只说「太均匀」的话，auto_revise 拿不到 evidence
+                # 就只能跳过，这条规则等于永远修不了。
+                uniform_paragraphs = [p for p in split_paragraphs_with_offsets(chapter)
+                                      if not p['text'].lstrip().startswith('#')]
+                evidence = []
+                anchors = []
+                if len(uniform_paragraphs) > 1:
+                    ulens = [len(p['text'].strip()) for p in uniform_paragraphs]
+                    uavg = sum(ulens) / float(len(ulens))
+                    for para, length in zip(uniform_paragraphs, ulens):
+                        if abs(length - uavg) > th104['closeness_chars']:
+                            continue
+                        evidence.append(para['text'].strip()[:40])
+                        anchors.append(para['index'])
+                        if len(anchors) >= 2:
+                            break
+                add(findings, 'AUD-104', 'minor', 'paragraph-monotony',
+                    'Paragraph lengths are too uniform (%d/%d paragraphs within %d chars of the average); rhythm may feel machine-made.'
+                    % (close, len(lens), th104['closeness_chars']),
+                    evidence=evidence,
+                    repair_targets=['Vary paragraph length and beat density.'],
+                    anchors=anchors)
                 fix_plan.append('Vary paragraph length and beat density.')
 
     open_hooks, hook_keywords = open_hook_keywords(pending_hooks)
@@ -249,17 +320,19 @@ def build_report(project, chapter_file, config=None):
         constraint_lines = [x for x in extract_bullets(book_rules) if re.search(r'不能|不得|不要|禁止|avoid|never|must not|do not|constraint|prohibition', x, flags=re.I)]
         lock_breaks = [x for x in kw['PROTAGONIST_LOCK_BREAKS'] if x in chapter]
         if constraint_lines and lock_breaks:
-            add(findings, 'AUD-109', 'major', 'protagonist-lock', 'Potential protagonist lock break language found.', evidence=lock_breaks + constraint_lines[:3], repair_targets=['Re-check protagonist lock before keeping this turn in characterization.'])
+            add(findings, 'AUD-109', 'major', 'protagonist-lock', 'Potential protagonist lock break language found.', evidence=lock_breaks + constraint_lines[:3], repair_targets=['Re-check protagonist lock before keeping this turn in characterization.'], anchors=anchor_paragraphs(chapter, lock_breaks))
             fix_plan.append('Re-check protagonist lock before keeping this turn in characterization.')
 
     if 'AUD-110' not in disabled:
         rules_evaluated.append('AUD-110')
         recent = latest_sections(chapter_summaries, CHAPTER_HEADING_RE, 3)
         if ('不知道' in current_state or '不知' in current_state) and any(x in chapter for x in kw['AUD110_LEAK_TRIGGERS']):
-            add(findings, 'AUD-110', 'critical', 'information-boundary', 'Possible knowledge leak against current_state character-belief section.', repair_targets=['Verify who is allowed to know the revealed fact, then patch the leaking line.'])
+            leak_hits = [x for x in kw['AUD110_LEAK_TRIGGERS'] if x in chapter]
+            add(findings, 'AUD-110', 'critical', 'information-boundary', 'Possible knowledge leak against current_state character-belief section.', evidence=leak_hits, repair_targets=['Verify who is allowed to know the revealed fact, then patch the leaking line.'], anchors=anchor_paragraphs(chapter, leak_hits))
             fix_plan.append('Verify who is allowed to know the revealed fact, then patch the leaking line.')
         elif recent and any(x in chapter for x in kw['KNOWLEDGE_LEAPS']):
-            add(findings, 'AUD-110', 'minor', 'information-boundary', 'Check whether current POV earns this level of knowledge disclosure.', evidence=[x for x in kw['KNOWLEDGE_LEAPS'] if x in chapter], repair_targets=['Check whether current POV has actually earned this reveal level.'])
+            leap_hits = [x for x in kw['KNOWLEDGE_LEAPS'] if x in chapter]
+            add(findings, 'AUD-110', 'minor', 'information-boundary', 'Check whether current POV earns this level of knowledge disclosure.', evidence=leap_hits, repair_targets=['Check whether current POV has actually earned this reveal level.'], anchors=anchor_paragraphs(chapter, leap_hits))
             fix_plan.append('Check whether current POV has actually earned this reveal level.')
 
     if 'AUD-111' not in disabled:
@@ -268,7 +341,7 @@ def build_report(project, chapter_file, config=None):
         jump_hits = [x for x in kw['TIME_JUMPS'] if x in chapter]
         if len(jump_hits) >= th111['min_jumps'] and len(chapter) < th111['max_chapter_chars']:
             sev = 'major' if len(jump_hits) >= th111['major_at'] else 'minor'
-            add(findings, 'AUD-111', sev, 'timeline-continuity', 'Multiple time-jump markers appear in a compact chapter; verify timeline coherence.', evidence=jump_hits, repair_targets=['Check whether time progression is clear and earned between scene beats.'])
+            add(findings, 'AUD-111', sev, 'timeline-continuity', 'Multiple time-jump markers appear in a compact chapter; verify timeline coherence.', evidence=jump_hits, repair_targets=['Check whether time progression is clear and earned between scene beats.'], anchors=anchor_paragraphs(chapter, jump_hits))
             fix_plan.append('Check whether time progression is clear and earned between scene beats.')
 
     if 'AUD-112' not in disabled:
@@ -281,14 +354,14 @@ def build_report(project, chapter_file, config=None):
         rules_evaluated.append('AUD-113')
         telling_hits = [w for w in kw['TELLING_PHRASES'] if w in chapter]
         if len(telling_hits) >= thresholds['AUD-113']['min_hits']:
-            add(findings, 'AUD-113', 'minor', 'telling-vs-dramatizing', 'Repeated emotional labeling found: %s.' % ', '.join(sorted(set(telling_hits))), evidence=sorted(set(telling_hits)), repair_targets=['Replace some direct emotion labels with action or sensory cues.'])
+            add(findings, 'AUD-113', 'minor', 'telling-vs-dramatizing', 'Repeated emotional labeling found: %s.' % ', '.join(sorted(set(telling_hits))), evidence=sorted(set(telling_hits)), repair_targets=['Replace some direct emotion labels with action or sensory cues.'], anchors=anchor_paragraphs(chapter, telling_hits))
             fix_plan.append('Replace some direct emotion labels with action or sensory cues.')
 
     if 'AUD-114' not in disabled:
         rules_evaluated.append('AUD-114')
         turn_hits = [w for w in kw['STATE_TURN_MARKERS'] if w in chapter]
         if len(turn_hits) >= thresholds['AUD-114']['min_hits']:
-            add(findings, 'AUD-114', 'note', 'state-update-pressure', 'Chapter contains multiple state-turn markers; remember to update truth files after acceptance.', evidence=turn_hits[:8], repair_targets=['Prepare state updates for summaries, hooks, relationships, and emotional arcs.'])
+            add(findings, 'AUD-114', 'note', 'state-update-pressure', 'Chapter contains multiple state-turn markers; remember to update truth files after acceptance.', evidence=turn_hits[:8], repair_targets=['Prepare state updates for summaries, hooks, relationships, and emotional arcs.'], anchors=anchor_paragraphs(chapter, turn_hits))
             fix_plan.append('Prepare state updates for summaries, hooks, relationships, and emotional arcs.')
 
     findings.sort(key=lambda x: (SEVERITY_ORDER[x['severity']], x['rule_id']))
@@ -314,9 +387,9 @@ def build_report(project, chapter_file, config=None):
         'schema_version': 'novelops.audit-report.v1',
         'tool': 'audit_chapter',
         'generated_at': iso_now(),
-        'project': str(project),
-        'chapter': str(chapter_file),
-        'chapter_file': str(chapter_file),
+        'project': posix_path(project),
+        'chapter': posix_path(chapter_file),
+        'chapter_file': posix_path(chapter_file),
         'overall': overall,
         'summary': {
             'counts': counts,
@@ -325,16 +398,22 @@ def build_report(project, chapter_file, config=None):
             'config': config_summary,
         },
         'source_files': [
-            str(chapter_file),
-            str(project / 'current_state.md'),
-            str(project / 'book_rules.md'),
-            str(project / 'pending_hooks.md'),
-            str(project / 'chapter_summaries.md'),
-            str(project / 'outline.md'),
+            posix_path(chapter_file),
+            posix_path(project / 'current_state.md'),
+            posix_path(project / 'book_rules.md'),
+            posix_path(project / 'pending_hooks.md'),
+            posix_path(project / 'chapter_summaries.md'),
+            posix_path(project / 'outline.md'),
         ],
         'chapter_metrics': chapter_metrics(chapter, kw['TIME_JUMPS']),
         'findings': findings,
         'minimal_fix_plan': dedup_fix_plan,
+        'coverage': {
+            'automated_rules': list(rules_evaluated),
+            'human_only_dimensions': HUMAN_ONLY_DIMENSIONS,
+            'note': ('overall=%s 只表示上述自动规则未触发；human_only_dimensions '
+                     '未被任何脚本检查，仍需人工或 LLM 复核。' % overall),
+        },
     }
 
 
@@ -352,7 +431,7 @@ def main():
         reviews = Path(args.project) / 'reviews'
         reviews.mkdir(parents=True, exist_ok=True)
         out = reviews / ('%s.audit.json' % Path(args.chapter_file).stem)
-        report['report_path'] = str(out)
+        report['report_path'] = posix_path(out)
         write_json(out, report)
 
     if args.json:

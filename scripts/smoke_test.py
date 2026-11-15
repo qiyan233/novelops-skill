@@ -147,6 +147,28 @@ def main():
         assert_contains(project / 'current_state.md', '强制覆盖测试')
         print('init non-empty directory safety ok')
 
+        print('===== init backup & keep-modified regression =====')
+        gitignore_text = (project / '.gitignore').read_text(encoding='utf-8')
+        if 'reviews/' not in gitignore_text:
+            raise AssertionError('template .gitignore should ignore generated reviews/ reports')
+        backup_root = project / '.novelops-state' / 'backups'
+        backups = sorted(backup_root.glob('pre-init-*')) if backup_root.exists() else []
+        if not backups:
+            raise AssertionError('init --force should back up overwritten files before writing')
+        backup_state = backups[-1] / 'current_state.md'
+        if not backup_state.exists():
+            raise AssertionError('init --force backup should contain the overwritten current_state.md')
+        if 'CUSTOM USER STATE SHOULD SURVIVE' not in backup_state.read_text(encoding='utf-8'):
+            raise AssertionError('init --force backup should preserve the pre-overwrite state text')
+        (project / 'outline.md').unlink()
+        kept_init = run_cli('init', str(project), '强制覆盖测试', '--keep-modified', check=False)
+        if kept_init.returncode != 0:
+            raise SystemExit(kept_init.stderr.strip() or kept_init.stdout.strip() or 'cli init --keep-modified failed')
+        assert_contains(project / 'current_state.md', '强制覆盖测试')
+        if not (project / 'outline.md').exists():
+            raise AssertionError('init --keep-modified should still create missing template files')
+        print('init backup & keep-modified ok')
+
         print('===== init title escaping regression =====')
         special_project = tmp / 'special-title-novel'
         special_title = 'A&B/测试'
@@ -261,6 +283,44 @@ def main():
             if not contract_data.get('chapter_file'):
                 raise AssertionError('%s output missing chapter_file' % report_key)
         print('chapter_file contract ok')
+
+        print('===== audit anchors & coverage regression =====')
+        if 'coverage' not in audit_contract:
+            raise AssertionError('audit report should declare a coverage block')
+        coverage = audit_contract['coverage']
+        if not coverage.get('human_only_dimensions'):
+            raise AssertionError('audit coverage should list human-only dimensions')
+        if coverage.get('automated_rules') != audit_contract['summary']['rules_evaluated']:
+            raise AssertionError('coverage.automated_rules should match summary.rules_evaluated')
+        if '\\' in audit_contract['chapter_file'] or '\\' in audit_contract['project']:
+            raise AssertionError('report paths should use posix separators')
+        for finding in audit_contract['findings']:
+            if 'anchors' not in finding:
+                raise AssertionError('audit finding %s should carry an anchors list' % finding['rule_id'])
+        anchor_chapter = project / 'chapters' / 'ch07.md'
+        anchor_chapter.write_text(
+            '# 第七章\n\n他突然停下。\n\n灯芯安静地燃着。\n\n他突然抬头。\n\n'
+            '雨声还在。\n\n他突然转身。\n',
+            encoding='utf-8',
+        )
+        anchor_audit = json.loads(
+            run_cli('audit', '--project', str(project), '--chapter-file', str(anchor_chapter), '--json').stdout
+        )
+        transition_findings = [f for f in anchor_audit['findings'] if f['rule_id'] == 'AUD-101']
+        if not transition_findings:
+            raise AssertionError('AUD-101 should fire on a chapter with repeated transition words')
+        if not transition_findings[0]['anchors']:
+            raise AssertionError('AUD-101 should point at the offending paragraphs')
+        anchor_dry = json.loads(
+            run_cli('auto-revise', '--project', str(project), '--chapter-file', str(anchor_chapter),
+                    '--dry-run', '--json').stdout
+        )
+        if not anchor_dry['targets']:
+            raise AssertionError('auto-revise should target anchored paragraphs without evidence text')
+        if anchor_dry['skipped_findings']:
+            raise AssertionError('auto-revise should not skip anchored findings: %r' % (anchor_dry['skipped_findings'],))
+        anchor_chapter.unlink()
+        print('audit anchors & coverage ok')
 
         print('===== project config engine =====')
         import novelops_config
@@ -642,6 +702,16 @@ def main():
             raise AssertionError('auto-revise diff mode must not modify the chapter file')
         if ar_diff['snapshot'] is not None:
             raise AssertionError('auto-revise diff mode should not snapshot')
+        ar_verification = ar_diff.get('verification')
+        if not ar_verification:
+            raise AssertionError('auto-revise diff mode should re-audit the revised text')
+        if ar_verification['before']['overall'] != ar_diff['based_on']['audit_overall']:
+            raise AssertionError('verification.before should match the cycle audit overall')
+        if ar_verification['verdict'] not in ('improved', 'unchanged', 'regressed'):
+            raise AssertionError('verification verdict should be improved/unchanged/regressed')
+        for key in ('resolved_rules', 'persisting_rules', 'introduced_rules', 'escalated_rules'):
+            if key not in ar_verification:
+                raise AssertionError('verification missing %s' % key)
 
         ar_apply = json.loads(
             run_cli('auto-revise', '--project', str(draft_project), '--chapter-file', str(ar_ch03),
@@ -661,6 +731,8 @@ def main():
         ar_backup = Path(ar_snapshot['chapter_backup'])
         if not ar_backup.exists() or ar_backup.read_text(encoding='utf-8') != ar_before:
             raise AssertionError('auto-revise --apply should back up the original chapter text')
+        if not ar_apply.get('verification'):
+            raise AssertionError('auto-revise --apply should record the verification block')
         print('auto-revise offline paths ok')
 
         print('===== update_story_state =====')
@@ -746,6 +818,63 @@ def main():
         if not revise_data.get('chapter_file') or not revise_data['audit'].get('chapter_file'):
             raise AssertionError('revise output missing chapter_file fields')
         print('revise entrypoint ok')
+
+        print('===== revise summary & fail-on regression =====')
+        chapter_one = str(project / 'chapters' / 'ch01.md')
+        summary_revise = run_cli('revise', '--project', str(project), '--chapter-file', chapter_one,
+                                 '--json', '--summary', check=False)
+        if summary_revise.returncode != 0:
+            raise SystemExit(summary_revise.stderr.strip() or summary_revise.stdout.strip() or 'cli revise --summary failed')
+        summary_data = json.loads(summary_revise.stdout)
+        if summary_data['schema_version'] != 'novelops.revision-cycle-summary.v1':
+            raise AssertionError('revise --summary schema mismatch')
+        for inlined in ('audit', 'revision_plan', 'spot_fixes', 'hook_pressure', 'knowledge_check'):
+            if inlined in summary_data:
+                raise AssertionError('revise --summary should not inline the full %s report' % inlined)
+        if set(summary_data['summary'].get('severity_counts', {})) != {'critical', 'major', 'minor', 'note'}:
+            raise AssertionError('revise --summary severity counts should cover all four levels')
+        if not summary_data.get('coverage', {}).get('human_only_dimensions'):
+            raise AssertionError('revise --summary should carry the audit coverage block')
+        if summary_data['summary'].get('worst_severity') not in ('critical', 'major', 'minor', 'note', None):
+            raise AssertionError('revise --summary worst_severity mismatch')
+        worst = summary_data['summary']['worst_severity']
+        gate = run_cli('revise', '--project', str(project), '--chapter-file', chapter_one,
+                       '--json', '--summary', '--fail-on', 'minor', check=False)
+        expected_gate = 2 if worst in ('critical', 'major', 'minor') else 0
+        if gate.returncode != expected_gate:
+            raise AssertionError('revise --fail-on minor exited %s, expected %s (worst=%s)'
+                                 % (gate.returncode, expected_gate, worst))
+        lenient = run_cli('revise', '--project', str(project), '--chapter-file', chapter_one,
+                          '--json', '--summary', '--fail-on', 'none', check=False)
+        if lenient.returncode != 0:
+            raise AssertionError('revise --fail-on none should exit 0')
+        print('revise summary & fail-on ok')
+
+        print('===== hook report fullwidth meta regression =====')
+        hook_project = tmp / 'hook-project'
+        run_cli('init', str(hook_project), '钩子测试')
+        (hook_project / 'pending_hooks.md').write_text(
+            '# Pending Hooks\n\n- [OPEN] 玉佩被人调包（opened：ch3）\n'
+            '- [ADVANCED] 徐安身份存疑（updated: ch4）\n',
+            encoding='utf-8',
+        )
+        (hook_project / 'chapter_summaries.md').write_text(
+            '# Chapter Summaries\n\n## 第十一章 雨停\n\n- Summary: 雨停了。\n',
+            encoding='utf-8',
+        )
+        hook_report_data = json.loads(
+            run_cli('hook-report', '--project', str(hook_project), '--json').stdout
+        )
+        if hook_report_data['schema_version'] != 'novelops.hook-report.v1':
+            raise AssertionError('hook-report schema mismatch')
+        stale_texts = [item['hook'] for item in hook_report_data['stale_hooks']]
+        if '玉佩被人调包' not in stale_texts:
+            raise AssertionError('hook-report should parse full-width meta and mark the ch3 hook stale: %r'
+                                 % (stale_texts,))
+        stale_item = [item for item in hook_report_data['stale_hooks'] if item['hook'] == '玉佩被人调包'][0]
+        if stale_item['opened_in'] != 3 or stale_item['age_chapters'] != 8:
+            raise AssertionError('hook-report full-width meta age mismatch: %r' % (stale_item,))
+        print('hook report fullwidth meta ok')
 
         print('===== write-report guard regression =====')
         audit_json = json.loads(

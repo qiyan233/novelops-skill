@@ -8,6 +8,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from novelops_common import iso_now, require_project_markers, state_root, write_json
+from novelops_common import posix_path
 
 TRACKED_FILES = [
     'story_bible.md',
@@ -92,9 +93,9 @@ def snapshot(project, label=None, chapter=None, notes=None):
             'schema_version': 'novelops.state-snapshot.v1',
             'tool': 'snapshot_story_state',
             'generated_at': iso_now(),
-            'project': str(project),
+            'project': posix_path(project),
             'snapshot_id': snapshot_id,
-            'snapshot_dir': str(dest),
+            'snapshot_dir': posix_path(dest),
             'label': label,
             'chapter': chapter,
             'notes': notes,
@@ -113,7 +114,7 @@ def snapshot(project, label=None, chapter=None, notes=None):
                 'generated_at': manifest['generated_at'],
                 'chapter': chapter,
                 'label': label,
-                'snapshot_dir': str(dest),
+                'snapshot_dir': posix_path(dest),
             }, ensure_ascii=False) + '\n')
     except BaseException:
         # 中途失败（文件被占用、磁盘写满）会留下没有 manifest 的半截目录；

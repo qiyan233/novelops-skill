@@ -57,6 +57,49 @@ def iso_now():
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace('+00:00', 'Z')
 
 
+def compact_utc_stamp():
+    """文件名安全的时间戳：Windows 路径不允许出现冒号，iso_now 不能直接当目录名。"""
+    return datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')
+
+
+def posix_path(path):
+    """报告里统一用 / 分隔。
+
+    同一份 JSON 里混进 `C:\\a` 与 `C:/a` 两种写法会让跨平台比较、
+    CI 断言和 agent 拼路径全部出错，因此在序列化边界统一转换。
+    """
+    if path is None:
+        return None
+    return Path(path).as_posix()
+
+
+PARAGRAPH_SPLIT_RE = re.compile(r'\n\s*\n')
+
+
+def split_paragraphs_with_offsets(text):
+    """按空行切段并记录字符偏移。
+
+    审计锚点与 auto_revise 的段落重写必须共用同一套切分口径，
+    否则「审计说第 12 段」和「改写工具里的第 12 段」可能不是同一段。
+    """
+    paragraphs = []
+    pos = 0
+    for match in PARAGRAPH_SPLIT_RE.finditer(text):
+        segment = text[pos:match.start()]
+        if segment.strip():
+            paragraphs.append({
+                'index': len(paragraphs),
+                'start': pos,
+                'end': match.start(),
+                'text': segment,
+            })
+        pos = match.end()
+    tail = text[pos:]
+    if tail.strip():
+        paragraphs.append({'index': len(paragraphs), 'start': pos, 'end': len(text), 'text': tail})
+    return paragraphs
+
+
 def require_existing_dir(path, label='Project'):
     path = Path(path)
     if not path.exists():

@@ -15,6 +15,7 @@ from novelops_common import (
     read_text,
     require_project_markers,
     write_json,
+    posix_path,
 )
 
 
@@ -177,9 +178,9 @@ def build_packet(project, chapter=None, recent_chapters=3, max_chars_per_file=18
         'schema_version': 'novelops.write-next.v1',
         'tool': 'build_write_next_packet',
         'generated_at': iso_now(),
-        'project': str(project),
+        'project': posix_path(project),
         'chapter': chapter,
-        'chapter_file_hint': chapter_path_hint(project, chapter),
+        'chapter_file_hint': posix_path(chapter_path_hint(project, chapter)),
         'files_loaded': context_report['files_loaded'],
         'chapter_function': {
             'primary_goal': primary_goal,
@@ -258,7 +259,7 @@ def main():
     packet = build_packet(args.project, args.chapter, args.recent_chapters, args.max_chars_per_file)
     if args.write_report:
         out = Path(args.project) / 'reviews' / ('ch%02d.write-next.json' % packet['chapter'])
-        packet['report_path'] = str(out)
+        packet['report_path'] = posix_path(out)
         write_json(out, packet)
     if args.json:
         print(json.dumps(packet, ensure_ascii=False, indent=2))

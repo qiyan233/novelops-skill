@@ -2,3 +2,8 @@
 # 属于本地工作产物，不该进版本库。
 .novelops-state/
 .inkos-state/
+
+# 审计/修订报告里带正文原句（evidence），未发布的草稿不应随仓库外泄。
+# 需要保留评审结论时，用 `--write-report` 后手动挑选进 reviews/ 以外的位置。
+reviews/*.json
+

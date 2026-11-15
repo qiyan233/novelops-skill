@@ -5,6 +5,7 @@ import re
 from pathlib import Path
 
 from novelops_common import atomic_write_text, iso_now, read_text, require_project_markers, write_json
+from novelops_common import posix_path
 
 
 def one_line(value):
@@ -132,7 +133,7 @@ def apply_update(project, chapter, title, summary, state_changes, hook_open, hoo
         'schema_version': 'novelops.state-update.v1',
         'tool': 'update_story_state',
         'generated_at': iso_now(),
-        'project': str(project),
+        'project': posix_path(project),
         'chapter': chapter,
         'title': title,
         'summary': summary,
@@ -179,7 +180,7 @@ def main():
 
     if args.write_report:
         out = Path(args.project) / 'reviews' / ('ch%02d.state-update.json' % args.chapter)
-        report['report_path'] = str(out)
+        report['report_path'] = posix_path(out)
         write_json(out, report)
 
     if args.json:

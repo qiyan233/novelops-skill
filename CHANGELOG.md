@@ -6,6 +6,16 @@
 
 一轮针对数据安全与检查准确性的修复（尚未发版）。技术细节与逐条根因见 [`docs/audit-fixes.md`](docs/audit-fixes.md)。
 
+这轮同时补了报告可信度与初始化安全（尚未发版）。技术细节与逐条根因见 [`docs/audit-fixes.md`](docs/audit-fixes.md)。
+
+### Added
+
+- 审计报告新增 `coverage` 块：`automated_rules` 列出实际跑过的规则，`human_only_dimensions` 列出没有任何脚本检查的六个维度（角色行为一致性、世界规则违背、资源道具连续性、支线停滞、承诺兑现、情节逻辑漏洞）。`overall=pass` 只代表自动规则没触发，不再被误读成「这一章没问题」
+- 审计 finding 新增 `anchors`（命中的段落序号）；`auto-revise` 优先按锚点定位段落，不再只靠把 evidence 文本回搜原文——AUD-104 这类此前 `evidence` 为空的规则也能被定向修订
+- `auto-revise` 报告新增 `verification`：改写后用同一套审计复检修订稿，给出 before/after 计数、resolved/persisting/introduced/escalated 规则与 verdict（`improved`/`unchanged`/`regressed`）
+- `revise --summary`：只输出摘要（新契约 `novelops.revision-cycle-summary.v1`），不再内联五份完整报告；`--fail-on none|critical|major|minor` 按最严重级别返回退出码 2，可直接接 CI
+- 模板 `.gitignore` 增加 `reviews/*.json`：审计报告的 evidence 会引用正文原句，此前容易被连带提交
+
 ### Fixed
 
 - **中文数字章节标题现在能正确识别**：此前只有 `## Chapter 1`、`## 第 1 章` 这类写法生效；用「## 第一章」写 `chapter_summaries.md` 时会连锁出错——下一章号推断错误、上一章 POV 读不到、送给模型的上下文退化成整份文件
@@ -25,6 +35,9 @@
 - `auto-revise` 单条问题最多只牵引 2 个段落，避免「突然」这类通用词一次改写半个章节
 - 中文引号内的句子不再被从中间切断（「你到底是谁？」此前会被切成两个片段）
 - `llm` 配置里把某项显式写成 `null` 不再覆盖默认值
+- `init --force` 覆盖前会先把将被覆盖的文件备份到 `.novelops-state/backups/pre-init-<时间戳>/`；新增 `--keep-modified`：非空目录下只补缺失的模板文件，已改过的真值文件原样保留
+- 报告里的路径统一成 `/` 分隔（`Path.as_posix()`），同一份报告不再出现 `examples\demo-novel` 与 `examples/demo-novel/chapters/ch02.md` 混排
+- `hook-report` 能解析全角元信息（`（opened：ch3）`），不再把这行降级成没有章节年龄的 OPEN 钩子
 
 ## v1.1.0 — 2026-07-26
 

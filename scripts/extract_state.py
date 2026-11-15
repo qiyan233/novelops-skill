@@ -5,6 +5,7 @@ import re
 from pathlib import Path
 
 from novelops_common import iso_now, parse_chapter_number, read_text, require_existing_file, require_project_markers, split_sentences
+from novelops_common import posix_path
 
 SUMMARY_HINTS = ['怀疑', '确认', '发现', '决定', '暴露', '受伤', '失去', '拿到']
 RELATION_HINTS = ['信任', '怀疑', '敌意', '合作', '试探', '关系']
@@ -104,9 +105,9 @@ def build_report_from_text(chapter_text, chapter_file='', chapter_num=None, proj
         'schema_version': 'novelops.extract-state.v1',
         'tool': 'extract_state',
         'generated_at': iso_now(),
-        'project': str(project) if project is not None else '',
+        'project': posix_path(project) if project is not None else '',
         'chapter': inferred_chapter,
-        'chapter_file': str(chapter_file) if chapter_file else '',
+        'chapter_file': posix_path(chapter_file) if chapter_file else '',
         'title_guess': guessed_title,
         'summary': pick_summary(sentences),
         'state_changes': candidates['state_changes'],
@@ -123,7 +124,7 @@ def build_report(project, chapter_file):
     project = require_project_markers(project)
     chapter_file = require_existing_file(chapter_file, 'Chapter file')
     chapter_text = read_text(chapter_file)
-    return build_report_from_text(chapter_text, chapter_file=str(chapter_file), project=project)
+    return build_report_from_text(chapter_text, chapter_file=posix_path(chapter_file), project=posix_path(project))
 
 
 def print_markdown(report):

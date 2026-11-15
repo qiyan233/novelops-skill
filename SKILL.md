@@ -252,6 +252,10 @@ python scripts/audit_chapter.py \
 
 Write reports into `reviews/` when operating on files.
 
+Automated rules only cover part of the audit taxonomy. Read the report's `coverage` block: `automated_rules` are the checks that actually ran, while `human_only_dimensions` (character OOC, world-rule violations, resource/prop continuity, subplot stagnation, promise/payoff, logic holes) are **not** checked by any script. `overall: pass` therefore means "no automated rule fired", not "the chapter is fine" — still review those dimensions yourself.
+
+Each finding carries `anchors` (paragraph indexes). Reuse them instead of re-searching the chapter for `evidence` text; `auto-revise` does the same and can only target paragraphs it can locate.
+
 ### 6) Revision policy / 修订策略
 
 Prefer this order:

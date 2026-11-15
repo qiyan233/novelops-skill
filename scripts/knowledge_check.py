@@ -12,6 +12,7 @@ from novelops_common import (
     require_existing_file,
     require_project_markers,
     split_sentences,
+    posix_path,
 )
 from novelops_config import config_file_path, load_project_config, resolve_disabled, resolve_keyword_table
 
@@ -257,9 +258,9 @@ def build_report(project, chapter_file, config=None):
         'schema_version': 'novelops.knowledge-check.v1',
         'tool': 'knowledge_check',
         'generated_at': iso_now(),
-        'project': str(project),
+        'project': posix_path(project),
         'chapter': chapter_num,
-        'chapter_file': str(chapter_file),
+        'chapter_file': posix_path(chapter_file),
         'ok': ok,
         'summary': {
             'violation_count': len(violations),
@@ -269,10 +270,10 @@ def build_report(project, chapter_file, config=None):
             'config': config_summary,
         },
         'source_files': [
-            str(chapter_file),
-            str(project / 'current_state.md'),
-            str(project / 'character_matrix.md'),
-            str(project / 'chapter_summaries.md'),
+            posix_path(chapter_file),
+            posix_path(project / 'current_state.md'),
+            posix_path(project / 'character_matrix.md'),
+            posix_path(project / 'chapter_summaries.md'),
         ],
         'violations': violations,
     }
